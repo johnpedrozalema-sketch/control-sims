@@ -30,7 +30,7 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 # ==========================================
-# 2. CONEXIÓN Y "DOCTOR" DE GOOGLE SHEETS
+# 2. CONEXIÓN OPTIMIZADA
 # ==========================================
 def conectar_google():
     try:
@@ -44,56 +44,23 @@ def conectar_google():
         sheet = client.open(NOMBRE_HOJA)
         return sheet
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        st.stop()
+        # Si da error de cuota, esperamos un poco y reintentamos (Backoff)
+        if "429" in str(e):
+            st.warning("⏳ Tráfico alto con Google. Esperando 5 segundos...")
+            time.sleep(5)
+            st.rerun()
+        else:
+            st.error(f"Error de conexión: {e}")
+            st.stop()
 
-def verificar_y_reparar_hoja():
-    """Esta función es el DOCTOR. Revisa si los títulos existen. Si no, los crea."""
-    sheet = conectar_google()
-    
-    # 1. REVISAR PESTAÑA 'sims'
-    try:
-        ws = sheet.worksheet("sims")
-        # Leemos la primera fila
-        headers = [str(h).lower().strip() for h in ws.row_values(1)]
-        if "iccid" not in headers:
-            st.toast("⚠️ Reparando encabezados en hoja 'sims'...", icon="🔧")
-            # Si no está 'iccid', asumimos que la hoja está mal y reescribimos la fila 1
-            ws.insert_row(['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'], 1)
-    except:
-        # Si la hoja no existe, la creamos
-        ws = sheet.add_worksheet("sims", 1000, 20)
-        ws.append_row(['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
-
-    # 2. REVISAR PESTAÑA 'historial'
-    try:
-        ws_h = sheet.worksheet("historial")
-        headers_h = [str(h).lower().strip() for h in ws_h.row_values(1)]
-        if "iccid" not in headers_h:
-            ws_h.insert_row(['iccid', 'accion', 'detalle', 'usuario', 'fecha'], 1)
-    except:
-        ws_h = sheet.add_worksheet("historial", 1000, 10)
-        ws_h.append_row(['iccid', 'accion', 'detalle', 'usuario', 'fecha'])
-
-    # 3. REVISAR PESTAÑA 'usuarios'
-    try:
-        ws_u = sheet.worksheet("usuarios")
-        headers_u = [str(h).lower().strip() for h in ws_u.row_values(1)]
-        if "username" not in headers_u:
-            ws_u.insert_row(['username', 'password', 'rol'], 1)
-            # Creamos admin por defecto si reparamos la tabla
-            ws_u.append_row(['admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin'])
-    except:
-        ws_u = sheet.add_worksheet("usuarios", 1000, 5)
-        ws_u.append_row(['username', 'password', 'rol'])
-        ws_u.append_row(['admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin'])
-
+# --- AQUÍ ESTÁ EL TRUCO (CACHÉ) ---
+# ttl=10 significa: "Recuerda esto por 10 segundos antes de volver a preguntar a Google"
+@st.cache_data(ttl=10)
 def leer_datos(pestaña):
     sheet = conectar_google()
     worksheet = sheet.worksheet(pestaña)
     data = worksheet.get_all_records()
-    # Si la hoja está vacía (solo encabezados), pandas a veces devuelve vacío.
-    # Forzamos un DataFrame con las columnas correctas si está vacío
+    
     if not data:
         if pestaña == "sims":
             return pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
@@ -102,10 +69,15 @@ def leer_datos(pestaña):
     
     return pd.DataFrame(data)
 
+def limpiar_cache():
+    """Borra la memoria temporal para obligar a leer datos frescos"""
+    st.cache_data.clear()
+
 def escribir_fila(pestaña, fila_lista):
     sheet = conectar_google()
     worksheet = sheet.worksheet(pestaña)
     worksheet.append_row(fila_lista)
+    limpiar_cache() # Importante: Al escribir, borramos la memoria vieja
     return True
 
 def actualizar_sim_completa(iccid, datos_dict):
@@ -114,15 +86,20 @@ def actualizar_sim_completa(iccid, datos_dict):
     try:
         cell = worksheet.find(str(iccid))
         row_num = cell.row
-        worksheet.update_cell(row_num, 2, datos_dict['numero_linea'])
-        worksheet.update_cell(row_num, 3, datos_dict['cliente'])
-        worksheet.update_cell(row_num, 4, datos_dict['placa'])
-        worksheet.update_cell(row_num, 5, datos_dict['imei'])
-        worksheet.update_cell(row_num, 6, datos_dict['tipo_plan'])
-        worksheet.update_cell(row_num, 7, datos_dict['pais'])
-        worksheet.update_cell(row_num, 8, datos_dict['costo_q'])
-        worksheet.update_cell(row_num, 9, datos_dict['costo_d'])
-        worksheet.update_cell(row_num, 10, datos_dict['estado'])
+        # Actualización por lote (batch) para ahorrar peticiones
+        updates = [
+            {'range': f'B{row_num}', 'values': [[datos_dict['numero_linea']]]},
+            {'range': f'C{row_num}', 'values': [[datos_dict['cliente']]]},
+            {'range': f'D{row_num}', 'values': [[datos_dict['placa']]]},
+            {'range': f'E{row_num}', 'values': [[datos_dict['imei']]]},
+            {'range': f'F{row_num}', 'values': [[datos_dict['tipo_plan']]]},
+            {'range': f'G{row_num}', 'values': [[datos_dict['pais']]]},
+            {'range': f'H{row_num}', 'values': [[datos_dict['costo_q']]]},
+            {'range': f'I{row_num}', 'values': [[datos_dict['costo_d']]]},
+            {'range': f'J{row_num}', 'values': [[datos_dict['estado']]]},
+        ]
+        worksheet.batch_update(updates)
+        limpiar_cache()
         return True
     except Exception as e:
         st.error(f"Error actualizando: {e}")
@@ -135,6 +112,7 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         cell = worksheet.find(str(iccid))
         header = worksheet.find(columna_nombre)
         worksheet.update_cell(cell.row, header.col, nuevo_valor)
+        limpiar_cache()
         return True
     except:
         return False
@@ -143,18 +121,18 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
 # 3. LÓGICA DE NEGOCIO
 # ==========================================
 
-def registrar_sim(datos, usuario):
-    # Verificamos duplicados
-    df = leer_datos("sims")
-    
-    # PROTECCIÓN CONTRA CLAVES FALTANTES
-    if 'iccid' not in df.columns:
-        # Si llegamos aquí es porque la hoja en google está mal
-        return False 
-        
-    df['iccid'] = df['iccid'].astype(str)
-    if str(datos['iccid']) in df['iccid'].values:
-        return False
+def registrar_sim(datos, usuario, df_cache=None):
+    # Si nos pasan el DF, usamos ese (ahorra lecturas en carga masiva)
+    if df_cache is None:
+        df = leer_datos("sims")
+    else:
+        df = df_cache
+
+    # Validación segura
+    if 'iccid' in df.columns:
+        df['iccid'] = df['iccid'].astype(str)
+        if str(datos['iccid']) in df['iccid'].values:
+            return False
 
     linea = str(datos['numero_linea']) if datos['numero_linea'] and str(datos['numero_linea']).lower() != 'nan' else ""
     cliente = str(datos['cliente']) if datos['cliente'] and str(datos['cliente']).lower() != 'nan' else ""
@@ -174,6 +152,9 @@ def procesar_carga_masiva_final(df_limpio, usuario):
     df_limpio = df_limpio.fillna("")
     df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
 
+    # LEEMOS LA BASE DE DATOS UNA SOLA VEZ AL PRINCIPIO
+    df_db = leer_datos("sims")
+
     for index, row in df_limpio.iterrows():
         iccid_val = str(row['iccid']).strip()
         if not iccid_val or iccid_val.lower() == 'nan': continue
@@ -189,8 +170,9 @@ def procesar_carga_masiva_final(df_limpio, usuario):
             'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
             'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
         }
-        # Intentamos registrar. Si registrar_sim devuelve False (duplicado o error), sumamos error
-        if registrar_sim(datos, usuario): 
+        
+        # Pasamos df_db para no leer de Google en cada vuelta
+        if registrar_sim(datos, usuario, df_cache=df_db): 
             correctos += 1
         else: 
             errores += 1
@@ -199,7 +181,7 @@ def procesar_carga_masiva_final(df_limpio, usuario):
 
 def login_user(username, password):
     df = leer_datos("usuarios")
-    if 'username' not in df.columns: return None # Protección extra
+    if 'username' not in df.columns: return None
     
     df['username'] = df['username'].astype(str)
     user_row = df[df['username'] == username]
@@ -261,11 +243,6 @@ def crear_usuario(username, password, rol):
 # 4. INTERFAZ GRÁFICA (UI)
 # ==========================================
 def main():
-    # --- EJECUTAR EL DOCTOR AL INICIO ---
-    if 'db_checked' not in st.session_state:
-        verificar_y_reparar_hoja()
-        st.session_state.db_checked = True
-
     if 'usuario' not in st.session_state: st.session_state.usuario = None
     if 'rol' not in st.session_state: st.session_state.rol = None
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
@@ -307,8 +284,6 @@ def main():
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
-        else:
-            st.warning("Base de datos vacía o reparándose. Recarga la página.")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Gestión Inventario")
@@ -333,7 +308,7 @@ def main():
                         with st.spinner("Guardando..."):
                             if registrar_sim(d, st.session_state.usuario):
                                 st.success("Guardado"); st.session_state.form_id += 1; refrescar_pagina(2)
-                            else: st.error("Duplicado o Error en BD")
+                            else: st.error("Duplicado o Error")
                     else: st.warning("Falta ICCID")
 
         with tab2:
@@ -345,24 +320,21 @@ def main():
             
             archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
             if archivo:
-                # SEPARACIÓN DE ERRORES: Leemos Excel aparte
                 df_check = None
                 try:
                     df_check = pd.read_excel(archivo)
-                    st.success("✅ Archivo Excel leído correctamente.")
-                except Exception as ex:
-                    st.error(f"❌ Error leyendo el archivo Excel: {ex}")
+                    st.success("✅ Archivo leído.")
+                except: st.error("Error leyendo archivo")
                 
                 if df_check is not None:
-                    # Mapeo manual
                     cols = list(df_check.columns)
-                    def f_idx(txt, lst):
-                        txt=txt.lower()
-                        for i,c in enumerate(lst):
-                            if txt in str(c).lower(): return i
+                    def f_idx(t, l):
+                        t=t.lower()
+                        for i,c in enumerate(l):
+                            if t in str(c).lower(): return i
                         return 0
                     
-                    st.write("Confirma las columnas:")
+                    st.write("Confirma columnas:")
                     c1,c2,c3 = st.columns(3)
                     si = c1.selectbox("ICCID", cols, index=f_idx("iccid",cols))
                     sl = c2.selectbox("Línea", cols, index=f_idx("linea",cols))
@@ -379,7 +351,6 @@ def main():
                     scd = c9.selectbox("Costo $", cols, index=f_idx("costo",cols))
 
                     if st.button("Procesar Datos"):
-                        # Construir DF limpio
                         df_final = pd.DataFrame()
                         df_final['iccid'] = df_check[si]
                         df_final['numero_linea'] = df_check[sl]
@@ -391,13 +362,13 @@ def main():
                         df_final['costo_q'] = df_check[scq]
                         df_final['costo_d'] = df_check[scd]
                         
-                        with st.spinner("Subiendo a Google Sheets..."):
+                        with st.spinner("Subiendo... (Esto puede tardar unos segundos)"):
                             try:
                                 c, e = procesar_carga_masiva_final(df_final, st.session_state.usuario)
                                 st.success(f"✅ Finalizado: {c} guardados | {e} duplicados")
                                 refrescar_pagina(5)
                             except Exception as db_err:
-                                st.error(f"❌ Error guardando en Base de Datos: {db_err}")
+                                st.error(f"Error: {db_err}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
