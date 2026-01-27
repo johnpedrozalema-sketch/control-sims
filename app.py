@@ -330,7 +330,7 @@ def cancelar_servicio(iccid, usuario, motivo):
     return False
 
 # ==============================================================================
-# 4. APLICACIÓN PRINCIPAL (UI) - ACTUALIZADA CON CONSULTA RÁPIDA
+# 4. APLICACIÓN PRINCIPAL (UI) - CON BUSCADOR PREDICTIVO ÁGIL
 # ==============================================================================
 
 def app_control_sim():
@@ -342,11 +342,10 @@ def app_control_sim():
     st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas_disponibles, index=0)
     st.sidebar.caption(f"Hora: {obtener_hora_actual()}")
     
-    # MENÚ DINÁMICO (Agregamos "Consulta SIM" para ambos roles)
+    # MENÚ DINÁMICO
     if st.session_state.rol == "admin":
         menu_ops = ["Dashboard", "🔍 Consulta SIM", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
     else:
-        # Menú para usuario general
         menu_ops = ["Dashboard", "🔍 Consulta SIM", "Reportes"]
     
     choice = st.sidebar.radio("Opciones:", menu_ops)
@@ -378,69 +377,66 @@ def app_control_sim():
         else:
             st.info("Cargando datos...")
 
-    # --- NUEVA PANTALLA: CONSULTA SIM ---
+    # --- PANTALLA CONSULTA SIM (MEJORADA - TIPO GOOGLE) ---
     elif choice == "🔍 Consulta SIM":
-        st.subheader("🔍 Buscador Rápido de SIM")
-        st.info("Ingresa el ICCID para verificar si la SIM es válida, si tiene línea o si ya fue desechada.")
+        st.subheader("🔍 Buscador Inteligente")
+        st.caption("Escribe para filtrar. Selecciona una SIM para ver su diagnóstico inmediato.")
         
-        busqueda = st.text_input("Escribe el ICCID (o parte de él):", placeholder="Ej: 89502...")
-        
-        if busqueda:
-            df = leer_datos("sims")
-            if not df.empty:
-                # Convertimos a string para buscar
-                df['iccid'] = df['iccid'].astype(str)
-                
-                # Buscamos coincidencia exacta o parcial
-                resultado = df[df['iccid'].str.contains(busqueda, na=False)]
-                
-                if not resultado.empty:
-                    st.write(f"Se encontraron **{len(resultado)}** resultados:")
-                    
-                    for index, row in resultado.iterrows():
-                        estado = row['estado']
-                        iccid_found = row['iccid']
-                        linea = row['numero_linea']
-                        cliente = row['cliente']
-                        
-                        # LOGICA DE SEMÁFORO SEGÚN ESTADO
-                        with st.container(border=True):
-                            c_icon, c_info = st.columns([1, 5])
-                            
-                            if estado == "Retirada":
-                                with c_icon: st.error("🚫")
-                                with c_info:
-                                    st.error(f"**ICCID:** {iccid_found}")
-                                    st.write(f"**Estado:** {estado} (INUTILIZABLE)")
-                                    st.caption("Esta SIM ya fue procesada en un traslado y no puede volver a usarse.")
-                            
-                            elif estado == "Cancelada":
-                                with c_icon: st.error("❌")
-                                with c_info:
-                                    st.error(f"**ICCID:** {iccid_found}")
-                                    st.write(f"**Estado:** {estado} (Dada de baja)")
-                            
-                            elif estado == "Activa":
-                                with c_icon: st.success("✅")
-                                with c_info:
-                                    st.success(f"**ICCID:** {iccid_found}")
-                                    st.write(f"**Estado:** Activa y Funcionando")
-                                    st.write(f"📞 **Línea:** {linea}")
-                                    st.write(f"👤 **Cliente:** {cliente}")
-                                    
-                            elif estado == "Botiquin":
-                                with c_icon: st.warning("📦")
-                                with c_info:
-                                    st.warning(f"**ICCID:** {iccid_found}")
-                                    st.write("**Estado:** Botiquín (Disponible)")
-                                    st.caption("Esta SIM está lista para usarse, pero aún NO tiene línea ni cliente.")
-                            
-                            else:
-                                # Otro estado desconocido
-                                st.info(f"**ICCID:** {iccid_found} | Estado: {estado}")
+        df = leer_datos("sims")
+        if not df.empty:
+            # Preparamos los datos para el buscador (ICCID + Cliente para dar contexto)
+            df['iccid'] = df['iccid'].astype(str)
+            # Creamos una columna "etiqueta" que muestra info mientras buscas
+            df['busqueda_visual'] = df['iccid'] + " | " + df['cliente'].astype(str) + " (" + df['estado'] + ")"
+            
+            # EL BUSCADOR AGIL (Selectbox con búsqueda)
+            seleccion = st.selectbox(
+                "Buscar SIM por ICCID o Cliente:",
+                options=df['busqueda_visual'].tolist(),
+                index=None,
+                placeholder="Escribe aquí el número..."
+            )
+            
+            st.markdown("---")
 
-                else:
-                    st.warning("No se encontró ninguna SIM con ese número.")
+            if seleccion:
+                # Extraemos el ICCID de la selección
+                iccid_seleccionado = seleccion.split(" | ")[0]
+                
+                # Buscamos los datos completos
+                fila = df[df['iccid'] == iccid_seleccionado].iloc[0]
+                estado = fila['estado']
+                
+                # --- DISEÑO DE RESPUESTA VISUAL ---
+                col_estado, col_significado = st.columns([1, 4])
+                
+                with col_estado:
+                    # Semáforo Visual Grande
+                    if estado == "Activa":
+                        st.success(f"✅ {estado}")
+                    elif estado == "Botiquin":
+                        st.warning(f"📦 {estado}")
+                    elif estado == "Retirada":
+                        st.error(f"🚫 {estado}")
+                    elif estado == "Cancelada":
+                        st.error(f"❌ {estado}")
+                    else:
+                        st.info(f"ℹ️ {estado}")
+
+                with col_significado:
+                    # Significado al lado
+                    if estado == "Activa":
+                        st.markdown(f"**Funcionando Correctamente** | Cliente: **{fila['cliente']}** | Línea: **{fila['numero_linea']}**")
+                    elif estado == "Botiquin":
+                        st.markdown("**Disponible para usar** | Sin línea ni cliente asignado.")
+                    elif estado == "Retirada":
+                        st.markdown("**INSERVIBLE** | Esta tarjeta ya fue usada en un traslado. Desechar.")
+                    elif estado == "Cancelada":
+                        st.markdown("**Dada de Baja** | Servicio cancelado administrativamente.")
+
+                # Detalles técnicos abajo (opcional, expandible)
+                with st.expander("Ver detalles técnicos completos"):
+                    st.json(fila.to_dict())
 
     # --- PANTALLA REGISTRAR ---
     elif choice == "Registrar SIM":
@@ -637,7 +633,6 @@ def app_control_sim():
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
             st.download_button(label="📥 Descargar Excel con Formato", data=buffer.getvalue(), file_name="reporte_sims.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             st.dataframe(df_export)
-
 # ==============================================================================
 # 5. MÓDULO C: GESTIÓN USUARIOS (CON EMAIL Y NOMBRE COMPLETO)
 # ==============================================================================
@@ -770,4 +765,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
