@@ -133,35 +133,44 @@ def procesar_carga_masiva(df, usuario):
     correctos = 0
     errores = 0
     
-    # 1. Normalizar encabezados (Todo a minúsculas y sin espacios)
+    # 1. Limpieza agresiva de encabezados
+    # Convertimos a texto, minúsculas y quitamos espacios al inicio y final
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 2. Validar columnas esperadas
+    # 2. Verificación DEBUG (Para saber qué está pasando)
     esperadas = ['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d']
-    if not all(col in df.columns for col in esperadas):
-        return 0, 0, f"Error: Las columnas no coinciden. Se encontraron: {list(df.columns)}"
+    
+    # Verificamos si falta alguna columna vital (ICCID)
+    if 'iccid' not in df.columns:
+        # AQUÍ ESTÁ LA MAGIA: Le decimos al usuario qué columnas encontró
+        columnas_encontradas = ", ".join(list(df.columns))
+        return 0, 0, f"Error: No encuentro la columna 'iccid'. Las columnas que veo en tu archivo son: [{columnas_encontradas}]. Revisa si hay filas vacías al inicio."
 
-    # 3. Limpieza de datos (fillna) y Asegurar que ICCID y Linea sean Texto
+    # 3. Limpieza de datos
     df = df.fillna("")
-    df['iccid'] = df['iccid'].astype(str).str.replace(".0", "", regex=False) # Quita decimales si excel los puso
-    df['numero_linea'] = df['numero_linea'].astype(str).str.replace(".0", "", regex=False)
+    
+    # Forzamos que iccid sea texto para evitar problemas de notación científica
+    df['iccid'] = df['iccid'].astype(str).str.replace(".0", "", regex=False)
 
     for index, row in df.iterrows():
-        # Evitar filas vacías que a veces quedan en Excel
-        if row['iccid'] == "" or row['iccid'] == "nan":
+        # Ignorar filas donde el ICCID esté vacío o sea 'nan'
+        iccid_val = str(row['iccid']).strip()
+        if not iccid_val or iccid_val.lower() == 'nan':
             continue
 
+        # Usamos .get() para evitar errores si falta alguna columna no esencial
         datos = {
-            'iccid': row['iccid'], 
-            'numero_linea': row['numero_linea'], 
-            'cliente': str(row['cliente']),
-            'placa': str(row['placa']), 
-            'imei': str(row['imei']), 
-            'tipo_plan': str(row['tipo_plan']), 
-            'pais': str(row['pais']),
-            'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
-            'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
+            'iccid': iccid_val, 
+            'numero_linea': str(row.get('numero_linea', '')).replace(".0", ""), 
+            'cliente': str(row.get('cliente', '')),
+            'placa': str(row.get('placa', '')), 
+            'imei': str(row.get('imei', '')), 
+            'tipo_plan': str(row.get('tipo_plan', '')), 
+            'pais': str(row.get('pais', '')),
+            'costo_q': row.get('costo_q', 0.0) if row.get('costo_q', "") != "" else 0.0,
+            'costo_d': row.get('costo_d', 0.0) if row.get('costo_d', "") != "" else 0.0
         }
+        
         if registrar_sim(datos, usuario): 
             correctos += 1
         else: 
@@ -310,16 +319,16 @@ def main():
             if archivo and st.button("Procesar"):
                 try:
                     df_upload = pd.read_excel(archivo)
-                    with st.spinner("Procesando..."):
+                    with st.spinner("Analizando archivo..."):
                         c, e, msg = procesar_carga_masiva(df_upload, st.session_state.usuario)
                     
                     if "Error" in msg:
                         st.error(msg)
                     else:
-                        st.success(f"✅ Guardados: {c} | Errores: {e}")
+                        st.success(f"✅ Guardados: {c} | Errores/Duplicados: {e}")
                         refrescar_pagina(3)
                 except Exception as ex:
-                    st.error(f"Error crítico al leer archivo: {ex}")
+                    st.error(f"Error crítico: {ex}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
@@ -417,3 +426,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
