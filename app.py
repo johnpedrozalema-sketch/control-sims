@@ -132,20 +132,41 @@ def registrar_sim(datos, usuario):
 def procesar_carga_masiva(df, usuario):
     correctos = 0
     errores = 0
-    df = df.fillna("")
-    df.columns = [c.lower().strip() for c in df.columns]
+    
+    # 1. Normalizar encabezados (Todo a minúsculas y sin espacios)
+    df.columns = [str(c).lower().strip() for c in df.columns]
+    
+    # 2. Validar columnas esperadas
     esperadas = ['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d']
-    if not all(col in df.columns for col in esperadas): return 0, 0, "Error: Columnas incorrectas."
+    if not all(col in df.columns for col in esperadas):
+        return 0, 0, f"Error: Las columnas no coinciden. Se encontraron: {list(df.columns)}"
+
+    # 3. Limpieza de datos (fillna) y Asegurar que ICCID y Linea sean Texto
+    df = df.fillna("")
+    df['iccid'] = df['iccid'].astype(str).str.replace(".0", "", regex=False) # Quita decimales si excel los puso
+    df['numero_linea'] = df['numero_linea'].astype(str).str.replace(".0", "", regex=False)
 
     for index, row in df.iterrows():
+        # Evitar filas vacías que a veces quedan en Excel
+        if row['iccid'] == "" or row['iccid'] == "nan":
+            continue
+
         datos = {
-            'iccid': row['iccid'], 'numero_linea': row['numero_linea'], 'cliente': row['cliente'],
-            'placa': row['placa'], 'imei': row['imei'], 'tipo_plan': row['tipo_plan'], 'pais': row['pais'],
+            'iccid': row['iccid'], 
+            'numero_linea': row['numero_linea'], 
+            'cliente': str(row['cliente']),
+            'placa': str(row['placa']), 
+            'imei': str(row['imei']), 
+            'tipo_plan': str(row['tipo_plan']), 
+            'pais': str(row['pais']),
             'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
             'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
         }
-        if registrar_sim(datos, usuario): correctos += 1
-        else: errores += 1
+        if registrar_sim(datos, usuario): 
+            correctos += 1
+        else: 
+            errores += 1
+            
     return correctos, errores, "Proceso finalizado"
 
 def actualizar_datos_sim(iccid, datos, usuario):
@@ -288,11 +309,17 @@ def main():
             archivo = st.file_uploader("Suelte archivo", type=["xlsx", "xls"])
             if archivo and st.button("Procesar"):
                 try:
-                    df_upload = pd.read_excel(archivo, dtype={'iccid': str, 'numero_linea': str})
+                    df_upload = pd.read_excel(archivo)
                     with st.spinner("Procesando..."):
                         c, e, msg = procesar_carga_masiva(df_upload, st.session_state.usuario)
-                    st.success(f"✅ Guardados: {c} | Errores: {e}"); refrescar_pagina(3)
-                except Exception as ex: st.error(f"Error: {ex}")
+                    
+                    if "Error" in msg:
+                        st.error(msg)
+                    else:
+                        st.success(f"✅ Guardados: {c} | Errores: {e}")
+                        refrescar_pagina(3)
+                except Exception as ex:
+                    st.error(f"Error crítico al leer archivo: {ex}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
@@ -388,4 +415,5 @@ def main():
             if st.checkbox("Ver Historial"): st.dataframe(leer_datos("historial"))
 
 if __name__ == "__main__":
+
     main()
