@@ -30,7 +30,7 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 # ==========================================
-# 2. CONEXIÓN OPTIMIZADA
+# 2. CONEXIÓN Y CACHÉ
 # ==========================================
 def conectar_google():
     try:
@@ -44,17 +44,14 @@ def conectar_google():
         sheet = client.open(NOMBRE_HOJA)
         return sheet
     except Exception as e:
-        # Si da error de cuota, esperamos un poco y reintentamos (Backoff)
         if "429" in str(e):
-            st.warning("⏳ Tráfico alto con Google. Esperando 5 segundos...")
+            st.warning("⏳ Esperando a Google (Límite de velocidad)...")
             time.sleep(5)
             st.rerun()
         else:
             st.error(f"Error de conexión: {e}")
             st.stop()
 
-# --- AQUÍ ESTÁ EL TRUCO (CACHÉ) ---
-# ttl=10 significa: "Recuerda esto por 10 segundos antes de volver a preguntar a Google"
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
     sheet = conectar_google()
@@ -70,14 +67,22 @@ def leer_datos(pestaña):
     return pd.DataFrame(data)
 
 def limpiar_cache():
-    """Borra la memoria temporal para obligar a leer datos frescos"""
     st.cache_data.clear()
 
 def escribir_fila(pestaña, fila_lista):
     sheet = conectar_google()
     worksheet = sheet.worksheet(pestaña)
     worksheet.append_row(fila_lista)
-    limpiar_cache() # Importante: Al escribir, borramos la memoria vieja
+    limpiar_cache()
+    return True
+
+# NUEVA FUNCIÓN: Escribir muchas filas de un solo golpe
+def escribir_lote(pestaña, lista_de_filas):
+    if not lista_de_filas: return True
+    sheet = conectar_google()
+    worksheet = sheet.worksheet(pestaña)
+    # append_rows es la clave: envía todo junto
+    worksheet.append_rows(lista_de_filas)
     return True
 
 def actualizar_sim_completa(iccid, datos_dict):
@@ -86,7 +91,6 @@ def actualizar_sim_completa(iccid, datos_dict):
     try:
         cell = worksheet.find(str(iccid))
         row_num = cell.row
-        # Actualización por lote (batch) para ahorrar peticiones
         updates = [
             {'range': f'B{row_num}', 'values': [[datos_dict['numero_linea']]]},
             {'range': f'C{row_num}', 'values': [[datos_dict['cliente']]]},
@@ -118,17 +122,12 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO
+# 3. LÓGICA DE NEGOCIO OPTIMIZADA
 # ==========================================
 
-def registrar_sim(datos, usuario, df_cache=None):
-    # Si nos pasan el DF, usamos ese (ahorra lecturas en carga masiva)
-    if df_cache is None:
-        df = leer_datos("sims")
-    else:
-        df = df_cache
-
-    # Validación segura
+def registrar_sim(datos, usuario):
+    # Registro individual (se mantiene igual)
+    df = leer_datos("sims")
     if 'iccid' in df.columns:
         df['iccid'] = df['iccid'].astype(str)
         if str(datos['iccid']) in df['iccid'].values:
@@ -146,43 +145,75 @@ def registrar_sim(datos, usuario, df_cache=None):
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"SIM creada como {estado}", usuario, fecha])
     return True
 
-def procesar_carga_masiva_final(df_limpio, usuario):
-    correctos = 0
-    errores = 0
+# --- FUNCIÓN REESCRITA PARA VELOCIDAD ---
+def procesar_carga_masiva_turbo(df_limpio, usuario):
     df_limpio = df_limpio.fillna("")
     df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
 
-    # LEEMOS LA BASE DE DATOS UNA SOLA VEZ AL PRINCIPIO
+    # 1. Leemos lo que ya existe para no duplicar
     df_db = leer_datos("sims")
+    iccids_existentes = set()
+    if 'iccid' in df_db.columns:
+        iccids_existentes = set(df_db['iccid'].astype(str).tolist())
+
+    # 2. Preparamos las listas (Las carretillas)
+    nuevas_filas_sims = []
+    nuevas_filas_historial = []
+    
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    correctos = 0
+    duplicados = 0
 
     for index, row in df_limpio.iterrows():
         iccid_val = str(row['iccid']).strip()
-        if not iccid_val or iccid_val.lower() == 'nan': continue
-
-        datos = {
-            'iccid': iccid_val, 
-            'numero_linea': str(row['numero_linea']).replace(".0", ""), 
-            'cliente': str(row['cliente']),
-            'placa': str(row['placa']), 
-            'imei': str(row['imei']), 
-            'tipo_plan': str(row['tipo_plan']), 
-            'pais': str(row['pais']),
-            'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
-            'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
-        }
         
-        # Pasamos df_db para no leer de Google en cada vuelta
-        if registrar_sim(datos, usuario, df_cache=df_db): 
-            correctos += 1
-        else: 
-            errores += 1
-            
-    return correctos, errores
+        # Validaciones básicas
+        if not iccid_val or iccid_val.lower() == 'nan': continue
+        if iccid_val in iccids_existentes:
+            duplicados += 1
+            continue # Saltamos duplicados
+
+        # Lógica de estado
+        n_linea = str(row['numero_linea']).replace(".0", "")
+        n_cliente = str(row['cliente'])
+        estado = "Activa" if n_linea and n_cliente and n_linea.lower()!='nan' else "Botiquin"
+
+        # Armamos la fila de SIMs
+        fila_sim = [
+            iccid_val, 
+            n_linea, 
+            n_cliente,
+            str(row['placa']), 
+            str(row['imei']), 
+            str(row['tipo_plan']), 
+            str(row['pais']),
+            row['costo_q'] if row['costo_q'] != "" else 0.0,
+            row['costo_d'] if row['costo_d'] != "" else 0.0,
+            estado,
+            fecha_hoy
+        ]
+        
+        # Armamos la fila de Historial
+        fila_hist = [iccid_val, "Creacion Masiva", f"Carga Excel. Estado: {estado}", usuario, fecha_hoy]
+
+        nuevas_filas_sims.append(fila_sim)
+        nuevas_filas_historial.append(fila_hist)
+        
+        # Agregamos al set temporal para evitar duplicados dentro del mismo excel
+        iccids_existentes.add(iccid_val)
+        correctos += 1
+
+    # 3. ENVIAMOS TODO DE UN SOLO GOLPE (Batch)
+    if nuevas_filas_sims:
+        escribir_lote("sims", nuevas_filas_sims)
+        escribir_lote("historial", nuevas_filas_historial)
+        limpiar_cache() # Limpiamos memoria para ver los cambios
+        
+    return correctos, duplicados
 
 def login_user(username, password):
     df = leer_datos("usuarios")
     if 'username' not in df.columns: return None
-    
     df['username'] = df['username'].astype(str)
     user_row = df[df['username'] == username]
     if not user_row.empty:
@@ -284,6 +315,7 @@ def main():
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
+        else: st.info("Cargando datos...")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Gestión Inventario")
@@ -323,7 +355,7 @@ def main():
                 df_check = None
                 try:
                     df_check = pd.read_excel(archivo)
-                    st.success("✅ Archivo leído.")
+                    st.success(f"✅ Archivo leído. Filas detectadas: {len(df_check)}")
                 except: st.error("Error leyendo archivo")
                 
                 if df_check is not None:
@@ -350,7 +382,7 @@ def main():
                     scq = c8.selectbox("Costo Q", cols, index=f_idx("costo q",cols))
                     scd = c9.selectbox("Costo $", cols, index=f_idx("costo",cols))
 
-                    if st.button("Procesar Datos"):
+                    if st.button(f"Procesar {len(df_check)} filas"):
                         df_final = pd.DataFrame()
                         df_final['iccid'] = df_check[si]
                         df_final['numero_linea'] = df_check[sl]
@@ -362,10 +394,11 @@ def main():
                         df_final['costo_q'] = df_check[scq]
                         df_final['costo_d'] = df_check[scd]
                         
-                        with st.spinner("Subiendo... (Esto puede tardar unos segundos)"):
+                        with st.spinner("Enviando bloque de datos a Google... (Turbo 🚀)"):
                             try:
-                                c, e = procesar_carga_masiva_final(df_final, st.session_state.usuario)
-                                st.success(f"✅ Finalizado: {c} guardados | {e} duplicados")
+                                # AQUI LLAMAMOS A LA VERSIÓN TURBO
+                                c, e = procesar_carga_masiva_turbo(df_final, st.session_state.usuario)
+                                st.success(f"✅ Éxito total: {c} nuevas SIMs guardadas | {e} duplicados ignorados")
                                 refrescar_pagina(5)
                             except Exception as db_err:
                                 st.error(f"Error: {db_err}")
