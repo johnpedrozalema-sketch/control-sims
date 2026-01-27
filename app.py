@@ -7,7 +7,7 @@ import time
 import hashlib
 import io
 import json
-import pytz # IMPORTANTE: Librería para zonas horarias
+import pytz 
 
 # ==========================================
 # 1. CONFIGURACIÓN
@@ -30,18 +30,14 @@ def refrescar_pagina(segundos=3):
     time.sleep(segundos)
     st.rerun()
 
-# --- FUNCIÓN DE TIEMPO INTELIGENTE ---
 def obtener_hora_actual():
-    """Devuelve la fecha y hora ajustada a la zona horaria seleccionada por el usuario"""
-    # Si el usuario seleccionó una zona en el sidebar, la usamos. Si no, default Guatemala.
+    """Devuelve la fecha y hora ajustada a la zona horaria seleccionada"""
     zona_seleccionada = st.session_state.get('zona_horaria', 'America/Guatemala')
-    
     try:
         tz = pytz.timezone(zona_seleccionada)
         fecha_ajustada = datetime.now(tz)
         return fecha_ajustada.strftime("%Y-%m-%d %H:%M:%S")
     except:
-        # Si falla, devolvemos hora normal
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ==========================================
@@ -135,7 +131,7 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO (CON FECHA LOCAL)
+# 3. LÓGICA DE NEGOCIO
 # ==========================================
 
 def registrar_sim(datos, usuario):
@@ -148,8 +144,6 @@ def registrar_sim(datos, usuario):
     linea = str(datos['numero_linea']) if datos['numero_linea'] and str(datos['numero_linea']).lower() != 'nan' else ""
     cliente = str(datos['cliente']) if datos['cliente'] and str(datos['cliente']).lower() != 'nan' else ""
     estado = "Activa" if linea and cliente else "Botiquin"
-    
-    # USAMOS LA HORA LOCAL
     fecha = obtener_hora_actual()
 
     fila = [str(datos['iccid']), linea, cliente, str(datos['placa']), str(datos['imei']),
@@ -170,8 +164,6 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
 
     nuevas_filas_sims = []
     nuevas_filas_historial = []
-    
-    # USAMOS LA HORA LOCAL PARA EL LOTE
     fecha_hoy = obtener_hora_actual()
     correctos = 0
     duplicados = 0
@@ -225,7 +217,6 @@ def actualizar_datos_sim(iccid, datos, usuario):
     datos_full = datos.copy()
     datos_full['estado'] = nuevo_estado
     if actualizar_sim_completa(iccid, datos_full):
-        # HORA LOCAL
         fecha = obtener_hora_actual()
         escribir_fila("historial", [iccid, "Actualizacion", f"Estado: {nuevo_estado}", usuario, fecha])
         return True
@@ -249,8 +240,6 @@ def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
     actualizar_sim_completa(iccid_nuevo, datos_new)
     actualizar_celda_sim(iccid_antiguo, "estado", "Retirada")
     actualizar_celda_sim(iccid_antiguo, "numero_linea", "SIM RETIRADA")
-    
-    # HORA LOCAL
     fecha = obtener_hora_actual()
     escribir_fila("historial", [iccid_nuevo, "Traslado Entrada", f"De {iccid_antiguo}", usuario, fecha])
     escribir_fila("historial", [iccid_antiguo, "Traslado Salida", f"A {iccid_nuevo}", usuario, fecha])
@@ -258,7 +247,6 @@ def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
 
 def cancelar_servicio(iccid, usuario, motivo):
     if actualizar_celda_sim(iccid, "estado", "Cancelada"):
-        # HORA LOCAL
         fecha = obtener_hora_actual()
         escribir_fila("historial", [iccid, "Cancelacion", f"Motivo: {motivo}", usuario, fecha])
         return True
@@ -297,25 +285,15 @@ def main():
         return
 
     st.sidebar.title(f"👤 {st.session_state.usuario}")
-    
-    # --- SELECTOR DE ZONA HORARIA ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("🕒 Zona Horaria")
-    # Puedes agregar más zonas si lo necesitas
     zonas_disponibles = [
-        "America/Guatemala", 
-        "America/Bogota", 
-        "America/Mexico_City", 
-        "America/El_Salvador",
-        "America/Costa_Rica",
-        "UTC"
+        "America/Guatemala", "America/Bogota", "America/Mexico_City", 
+        "America/El_Salvador", "America/Costa_Rica", "UTC"
     ]
-    # Guardamos la selección en session_state para que la función la lea
     st.session_state.zona_horaria = st.sidebar.selectbox("Tu Ubicación:", zonas_disponibles, index=0)
-    
-    # Mostrar la hora actual para confirmar
     hora_actual = obtener_hora_actual()
-    st.sidebar.caption(f"Hora detectada: {hora_actual}")
+    st.sidebar.caption(f"Hora: {hora_actual}")
     st.sidebar.markdown("---")
 
     menu = ["Dashboard", "Reportes", "Salir"]
@@ -329,14 +307,36 @@ def main():
 
     # --- PANTALLAS ---
     if choice == "Dashboard":
-        st.title("📊 Tablero")
+        st.title("📊 Tablero de Control")
         df = leer_datos("sims")
         if not df.empty and 'estado' in df.columns:
+            # 1. TARJETAS DE CONTEO
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total", len(df))
+            c1.metric("Total Inventario", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
+
+            # 2. SECCIÓN FINANCIERA (NUEVA)
+            st.markdown("---")
+            st.subheader("💰 Facturación Mensual Estimada (Solo Activas)")
+            
+            # Cálculo matemático
+            # Convertimos las columnas a números, si hay texto lo pone como 0 (coerce)
+            df['costo_q'] = pd.to_numeric(df['costo_q'], errors='coerce').fillna(0)
+            df['costo_d'] = pd.to_numeric(df['costo_d'], errors='coerce').fillna(0)
+            
+            # Filtramos solo las ACTIVAS
+            df_activas = df[df['estado'] == 'Activa']
+            
+            total_q = df_activas['costo_q'].sum()
+            total_d = df_activas['costo_d'].sum()
+            
+            k1, k2 = st.columns(2)
+            # Usamos formato {:,.2f} para que ponga comas de miles y 2 decimales
+            k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
+            k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
+            
         else: st.info("Cargando datos...")
 
     elif choice == "Registrar SIM":
