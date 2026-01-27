@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, date
 import time
 import hashlib
 import io
@@ -143,7 +143,6 @@ def gestionar_reset_password():
                 if st.form_submit_button("Guardar y Acceder"):
                     if p1 == p2 and len(p1) > 4:
                         cell = ws.find(token_url)
-                        # COLUMNAS: email(1), password(2), rol(3), nombre(4), token(5)
                         ws.update_cell(cell.row, 2, make_hashes(p1)) 
                         ws.update_cell(cell.row, 5, "") 
                         st.success("¡Contraseña actualizada! Redirigiendo...")
@@ -524,65 +523,110 @@ def app_control_sim():
                         if cancelar_servicio(sel.split(" | ")[0], st.session_state.usuario, mot):
                             st.success("Listo"); refrescar_pagina(2)
 
-    # --- PANTALLA AUDITORÍA (NUEVA) ---
+    # --- PANTALLA AUDITORÍA (MEJORADA) ---
     elif choice == "Auditoría":
         st.subheader("🕵️ Auditoría de Cambios")
-        st.info("Aquí puedes ver todas las modificaciones realizadas en el sistema.")
+        st.info("Filtra por usuario, tipo de acción o fecha.")
         
-        # Leemos la hoja historial
         df_hist = leer_datos("historial")
+        
         if not df_hist.empty:
-            # Filtros
-            col1, col2 = st.columns(2)
-            usuarios_unicos = df_hist['Usuario'].unique() if 'Usuario' in df_hist.columns else []
-            filtro_user = col1.multiselect("Filtrar por Usuario", usuarios_unicos)
+            # 1. Asegurar formato de fecha para filtrado
+            try:
+                # Intentamos convertir la fecha (asumiendo formato string en sheet)
+                df_hist['Fecha_DT'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
+            except:
+                df_hist['Fecha_DT'] = pd.NaT
+
+            # 2. Preparar opciones de filtro (Para que NO salgan deshabilitados)
+            # Usamos dropna() para evitar opciones vacías
+            users_opt = sorted(df_hist['Usuario'].astype(str).unique().tolist())
+            actions_opt = sorted(df_hist['Acción'].astype(str).unique().tolist())
+
+            # 3. Interfaz de Filtros
+            c1, c2, c3 = st.columns(3)
             
-            acciones_unicas = df_hist['Acción'].unique() if 'Acción' in df_hist.columns else []
-            filtro_accion = col2.multiselect("Filtrar por Tipo de Acción", acciones_unicas)
-            
-            # Aplicar filtros
+            with c1:
+                sel_user = st.multiselect("Usuario", users_opt)
+            with c2:
+                sel_action = st.multiselect("Acción", actions_opt)
+            with c3:
+                # Filtro de fecha
+                fecha_filtro = st.date_input("Rango de Fecha", [])
+
+            # 4. Aplicar Filtros
             df_show = df_hist.copy()
-            if filtro_user:
-                df_show = df_show[df_show['Usuario'].isin(filtro_user)]
-            if filtro_accion:
-                df_show = df_show[df_show['Acción'].isin(filtro_accion)]
+
+            # Filtro Usuario
+            if sel_user:
+                df_show = df_show[df_show['Usuario'].isin(sel_user)]
             
-            # Ordenar por fecha descendente (lo más nuevo arriba) si existe columna fecha
+            # Filtro Acción
+            if sel_action:
+                df_show = df_show[df_show['Acción'].isin(sel_action)]
+            
+            # Filtro Fecha (Si se seleccionó un rango o un día)
+            if len(fecha_filtro) > 0:
+                start_date = fecha_filtro[0]
+                end_date = fecha_filtro[1] if len(fecha_filtro) > 1 else start_date
+                
+                # Filtramos usando la columna temporal datetime
+                df_show = df_show[
+                    (df_show['Fecha_DT'].dt.date >= start_date) & 
+                    (df_show['Fecha_DT'].dt.date <= end_date)
+                ]
+
+            # Limpieza final para mostrar (quitamos la columna auxiliar)
+            if 'Fecha_DT' in df_show.columns:
+                df_show = df_show.drop(columns=['Fecha_DT'])
+            
+            # Ordenar descendente (más nuevo primero) si hay fecha
             if 'Fecha' in df_show.columns:
                  df_show = df_show.sort_values(by='Fecha', ascending=False)
 
             st.dataframe(df_show, use_container_width=True)
         else:
-            st.warning("No hay registros de auditoría aún.")
+            st.warning("No hay registros de auditoría disponibles.")
 
-    # --- PANTALLA REPORTES (CON SEGURIDAD) ---
+    # --- PANTALLA REPORTES (BOTÓN ARRIBA) ---
     elif choice == "Reportes":
         st.subheader("📑 Reportes")
         df = leer_datos("sims")
         if not df.empty:
+            # Filtros laterales
             try:
                 p = st.sidebar.multiselect("Filtrar País", df['pais'].unique())
                 if p: df = df[df['pais'].isin(p)]
             except: pass
             
+            # Preparar DataFrame de Exportación
             df_export = df.copy()
             
-            # === SEGURIDAD DE ROLES: Ocultar costos a Generales ===
+            # Seguridad: Eliminar costos si no es admin
             if st.session_state.rol != 'admin':
                 columnas_prohibidas = ['costo_q', 'costo_d']
-                # Eliminamos las columnas si existen en el dataframe
                 df_export = df_export.drop(columns=[c for c in columnas_prohibidas if c in df_export.columns], errors='ignore')
             else:
-                # Solo formateamos si es admin y las columnas existen
+                # Formatear moneda solo para visualización/exportación si es admin
                 try:
                     df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
                     df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
                 except: pass
 
-            st.dataframe(df_export)
+            # --- CAMBIO: Botón de descarga AQUÍ ARRIBA ---
             buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
-            st.download_button("Excel (Con Formato)", buffer.getvalue(), "reporte_sims.xlsx")
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_export.to_excel(writer, index=False)
+            
+            st.download_button(
+                label="📥 Descargar Excel con Formato",
+                data=buffer.getvalue(),
+                file_name="reporte_sims.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            # ---------------------------------------------
+
+            st.dataframe(df_export)
 
 # ==============================================================================
 # 5. MÓDULO C: GESTIÓN USUARIOS (CON EMAIL Y NOMBRE COMPLETO)
