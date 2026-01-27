@@ -81,7 +81,7 @@ def enviar_correo_sistema(email_destino, asunto, mensaje_html):
         msg['To'] = email_destino
         msg['Subject'] = asunto
 
-        msg.attach(MIMEText(mensaje_html, 'html')) # Enviamos como HTML para mejor formato
+        msg.attach(MIMEText(mensaje_html, 'html'))
 
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -130,7 +130,6 @@ def gestionar_reset_password():
         data = ws.get_all_records()
         df = pd.DataFrame(data)
         
-        # Filtramos como string para evitar errores
         df['token'] = df['token'].astype(str)
         usuario_encontrado = df[df['token'] == token_url]
         
@@ -144,7 +143,6 @@ def gestionar_reset_password():
                 if st.form_submit_button("Guardar y Acceder"):
                     if p1 == p2 and len(p1) > 4:
                         cell = ws.find(token_url)
-                        # Actualizar pass y borrar token
                         # COLUMNAS: email(1), password(2), rol(3), nombre(4), token(5)
                         ws.update_cell(cell.row, 2, make_hashes(p1)) 
                         ws.update_cell(cell.row, 5, "") 
@@ -345,9 +343,10 @@ def app_control_sim():
     st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas_disponibles, index=0)
     st.sidebar.caption(f"Hora: {obtener_hora_actual()}")
     
+    # MENÚ DINÁMICO SEGÚN ROL
     menu_ops = ["Dashboard", "Reportes"]
     if st.session_state.rol == "admin":
-        menu_ops = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Reportes"]
+        menu_ops = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
     
     choice = st.sidebar.radio("Opciones:", menu_ops)
 
@@ -525,7 +524,38 @@ def app_control_sim():
                         if cancelar_servicio(sel.split(" | ")[0], st.session_state.usuario, mot):
                             st.success("Listo"); refrescar_pagina(2)
 
-    # --- PANTALLA REPORTES ---
+    # --- PANTALLA AUDITORÍA (NUEVA) ---
+    elif choice == "Auditoría":
+        st.subheader("🕵️ Auditoría de Cambios")
+        st.info("Aquí puedes ver todas las modificaciones realizadas en el sistema.")
+        
+        # Leemos la hoja historial
+        df_hist = leer_datos("historial")
+        if not df_hist.empty:
+            # Filtros
+            col1, col2 = st.columns(2)
+            usuarios_unicos = df_hist['Usuario'].unique() if 'Usuario' in df_hist.columns else []
+            filtro_user = col1.multiselect("Filtrar por Usuario", usuarios_unicos)
+            
+            acciones_unicas = df_hist['Acción'].unique() if 'Acción' in df_hist.columns else []
+            filtro_accion = col2.multiselect("Filtrar por Tipo de Acción", acciones_unicas)
+            
+            # Aplicar filtros
+            df_show = df_hist.copy()
+            if filtro_user:
+                df_show = df_show[df_show['Usuario'].isin(filtro_user)]
+            if filtro_accion:
+                df_show = df_show[df_show['Acción'].isin(filtro_accion)]
+            
+            # Ordenar por fecha descendente (lo más nuevo arriba) si existe columna fecha
+            if 'Fecha' in df_show.columns:
+                 df_show = df_show.sort_values(by='Fecha', ascending=False)
+
+            st.dataframe(df_show, use_container_width=True)
+        else:
+            st.warning("No hay registros de auditoría aún.")
+
+    # --- PANTALLA REPORTES (CON SEGURIDAD) ---
     elif choice == "Reportes":
         st.subheader("📑 Reportes")
         df = leer_datos("sims")
@@ -536,10 +566,18 @@ def app_control_sim():
             except: pass
             
             df_export = df.copy()
-            try:
-                df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
-                df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
-            except: pass
+            
+            # === SEGURIDAD DE ROLES: Ocultar costos a Generales ===
+            if st.session_state.rol != 'admin':
+                columnas_prohibidas = ['costo_q', 'costo_d']
+                # Eliminamos las columnas si existen en el dataframe
+                df_export = df_export.drop(columns=[c for c in columnas_prohibidas if c in df_export.columns], errors='ignore')
+            else:
+                # Solo formateamos si es admin y las columnas existen
+                try:
+                    df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
+                    df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
+                except: pass
 
             st.dataframe(df_export)
             buffer = io.BytesIO()
@@ -570,13 +608,11 @@ def app_gestion_usuarios():
                     sheet = conectar_google()
                     ws = sheet.worksheet("usuarios")
                     
-                    # Columna A ahora es email/username
                     users = ws.col_values(1) 
                     if new_email in users: 
                         st.error("Este correo ya está registrado.")
                     else:
                         token = str(uuid.uuid4())
-                        # ESTRUCTURA HOJA USUARIOS: | email | password | rol | nombre | token |
                         fila = [new_email, "PENDIENTE", new_rol, new_nombre, token]
                         with st.spinner("Guardando y enviando correo..."):
                             ws.append_row(fila)
@@ -604,7 +640,6 @@ def main():
         with col2:
             st.title("🔐 Acceso Control SIM")
             
-            # PESTAÑAS LOGIN / RECUPERAR
             tab_login, tab_recup = st.tabs(["Iniciar Sesión", "Olvidé mi contraseña"])
             
             with tab_login:
@@ -614,73 +649,4 @@ def main():
                     try:
                         sheet = conectar_google()
                         ws = sheet.worksheet("usuarios")
-                        df = pd.DataFrame(ws.get_all_records())
-                        # Convertir a string para evitar errores de tipo
-                        df['email'] = df['email'].astype(str)
-                        
-                        user_row = df[df['email'] == u]
-                        if not user_row.empty:
-                            hash_guardado = str(user_row.iloc[0]['password'])
-                            if check_hashes(p, hash_guardado):
-                                st.session_state.usuario = u
-                                st.session_state.rol = user_row.iloc[0]['rol']
-                                st.session_state.nombre = user_row.iloc[0]['nombre']
-                                st.toast(f"Bienvenido {st.session_state.nombre}")
-                                time.sleep(1)
-                                st.rerun()
-                            else: st.error("Contraseña incorrecta.")
-                        else: st.error("Usuario no encontrado.")
-                    except Exception as e: st.error(f"Error login: {e}")
-            
-            with tab_recup:
-                st.write("Ingresa tu correo y te enviaremos un enlace para restablecerla.")
-                rec_email = st.text_input("Correo de recuperación")
-                if st.button("Enviar enlace"):
-                    sheet = conectar_google()
-                    ws = sheet.worksheet("usuarios")
-                    df = pd.DataFrame(ws.get_all_records())
-                    df['email'] = df['email'].astype(str)
-                    
-                    user_row = df[df['email'] == rec_email]
-                    if not user_row.empty:
-                        token_nuevo = str(uuid.uuid4())
-                        nombre_user = user_row.iloc[0]['nombre']
-                        
-                        # Actualizar Token en Sheet
-                        cell = ws.find(rec_email)
-                        # Asumiendo Columna 5 es Token
-                        ws.update_cell(cell.row, 5, token_nuevo)
-                        
-                        if enviar_link_recuperacion(rec_email, token_nuevo, nombre_user):
-                            st.success("Correo enviado. Revisa tu bandeja de entrada.")
-                        else:
-                            st.error("Error al enviar el correo.")
-                    else:
-                        st.warning("Si el correo existe, se enviará el enlace.") # Mensaje genérico por seguridad
-
-        return
-
-    # --- SIDEBAR PRINCIPAL (YA LOGUEADO) ---
-    st.sidebar.title(f"👤 {st.session_state.nombre}")
-    st.sidebar.caption(f"{st.session_state.usuario} | {st.session_state.rol}")
-    
-    opciones_sistema = ["Control SIM"]
-    if st.session_state.rol == "admin":
-        opciones_sistema.append("Gestión Usuarios")
-        
-    app_mode = st.sidebar.selectbox("📍 SISTEMA:", opciones_sistema)
-    st.sidebar.markdown("---")
-    
-    if app_mode == "Control SIM": 
-        app_control_sim()
-    elif app_mode == "Gestión Usuarios":
-        app_gestion_usuarios()
-
-    if st.sidebar.button("Cerrar Sesión"):
-        st.session_state.usuario = None
-        st.session_state.nombre = None
-        st.session_state.rol = None
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
+                        df = pd
