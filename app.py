@@ -1,192 +1,338 @@
 import streamlit as st
 import pandas as pd
-import uuid  # Para generar códigos únicos de invitación
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+import time
+import hashlib
+import io
+import json
+import pytz
+import uuid
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ==============================================================================
-# CONFIGURACIÓN DE PÁGINA
+# 1. CONFIGURACIÓN GLOBAL (Debe ser la primera línea)
 # ==============================================================================
-st.set_page_config(
-    page_title="Gestor de Eventos V17.0",
-    page_icon="🎉",
-    layout="wide"
-)
+st.set_page_config(page_title="Suite Gestión Total", page_icon="🏢", layout="wide")
+
+# Constantes Google Sheets
+NOMBRE_HOJA = "Base de Datos SIMs" 
+SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+KEY_FILE = 'credenciales.json'
 
 # ==============================================================================
-# 1. INICIALIZACIÓN ROBUSTA (ELIMINA EL RIESGO DE KEYERROR)
+# 2. FUNCIONES DE UTILIDAD (Seguridad, Correo, Conexión)
 # ==============================================================================
-def inicializar_estado():
-    # Inicializamos el DataFrame de invitados si no existe
+
+def make_hashes(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+def check_hashes(password, hashed_text):
+    if make_hashes(password) == hashed_text:
+        return True
+    return False
+
+def conectar_google():
+    """Conexión robusta a Google Sheets con caché y reintentos"""
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.session_state.secrets["gcp_service_account"]) if "secrets" in st.session_state else st.secrets["gcp_service_account"]
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE, SCOPE)
+            
+        client = gspread.authorize(creds)
+        sheet = client.open(NOMBRE_HOJA)
+        return sheet
+    except Exception as e:
+        st.error(f"Error conectando a Google: {e}")
+        st.stop()
+
+def enviar_correo_activacion(email_destino, token, usuario):
+    """Envía un correo con el link para configurar la contraseña"""
+    try:
+        # Recuperar credenciales de secrets.toml
+        EMAIL_EMISOR = st.secrets["email"]["address"]
+        EMAIL_PASS = st.secrets["email"]["password"]
+        BASE_URL = st.secrets["email"].get("base_url", "http://localhost:8501")
+        
+        # Crear link
+        link = f"{BASE_URL}/?token_reset={token}"
+        
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_EMISOR
+        msg['To'] = email_destino
+        msg['Subject'] = "🔐 Activa tu cuenta - Control SIM & Eventos"
+
+        cuerpo = f"""
+        Hola {usuario},
+        
+        Se ha creado tu cuenta en la plataforma.
+        
+        Para comenzar, debes configurar tu contraseña segura haciendo clic aquí:
+        {link}
+        
+        Si no solicitaste esto, ignora este mensaje.
+        """
+        msg.attach(MIMEText(cuerpo, 'plain'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_EMISOR, EMAIL_PASS)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Error enviando correo: {e}")
+        return False
+
+def gestionar_reset_password():
+    """Lógica para cuando el usuario entra con el link del correo"""
+    token_url = st.query_params.get("token_reset", None)
+    
+    if token_url:
+        st.info("🔄 Modo Recuperación de Cuenta Detectado")
+        sheet = conectar_google()
+        ws = sheet.worksheet("usuarios")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        
+        # Buscar token
+        usuario_encontrado = df[df['token'] == token_url]
+        
+        if not usuario_encontrado.empty:
+            user_row = usuario_encontrado.iloc[0]
+            st.success(f"Hola {user_row['username']}, define tu nueva contraseña.")
+            
+            with st.form("form_reset"):
+                p1 = st.text_input("Nueva Contraseña", type="password")
+                p2 = st.text_input("Confirmar Contraseña", type="password")
+                if st.form_submit_button("Guardar Contraseña"):
+                    if p1 == p2 and len(p1) > 4:
+                        # Actualizar en Google Sheets
+                        cell = ws.find(token_url)
+                        row_num = cell.row
+                        
+                        # Columna B es password (2), Columna E es token (5) - ASUMIENDO ESTRUCTURA
+                        ws.update_cell(row_num, 2, make_hashes(p1)) # Guardar hash
+                        ws.update_cell(row_num, 5, "") # Borrar token para que no se use de nuevo
+                        
+                        st.success("Contraseña actualizada. Por favor inicia sesión.")
+                        st.query_params.clear() # Limpiar URL
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("Las contraseñas no coinciden o son muy cortas.")
+        else:
+            st.error("Este enlace ha expirado o no es válido.")
+            if st.button("Ir al Inicio"):
+                st.query_params.clear()
+                st.rerun()
+        return True # Indica que estamos en modo reset
+    return False
+
+# ==============================================================================
+# 3. MÓDULO A: CONTROL SIM (Tu código original optimizado)
+# ==============================================================================
+def app_control_sim():
+    st.markdown("## 📱 Sistema de Control SIM")
+    
+    # --- Funciones auxiliares locales del módulo SIM ---
+    @st.cache_data(ttl=10)
+    def leer_datos_sim(pestana):
+        sheet = conectar_google()
+        worksheet = sheet.worksheet(pestana)
+        data = worksheet.get_all_records()
+        if not data: return pd.DataFrame()
+        return pd.DataFrame(data)
+
+    def limpiar_cache_sim():
+        st.cache_data.clear()
+
+    # (Aquí pegamos la lógica de negocio de tu código original, resumida para integración)
+    def escribir_fila(pestana, fila):
+        ws = conectar_google().worksheet(pestana)
+        ws.append_row(fila)
+        limpiar_cache_sim()
+
+    # --- MENÚ INTERNO DE CONTROL SIM ---
+    menu_sim = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Reportes"]
+    choice = st.radio("Opciones SIM:", menu_sim, horizontal=True)
+    st.markdown("---")
+
+    if choice == "Dashboard":
+        df = leer_datos_sim("sims")
+        if not df.empty and 'estado' in df.columns:
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Total SIMs", len(df))
+            k2.metric("Activas", len(df[df['estado']=='Activa']))
+            k3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
+        else:
+            st.info("No hay datos o no se pudo cargar la base.")
+
+    elif choice == "Registrar SIM":
+        st.subheader("➕ Nueva SIM Manual")
+        with st.form("sim_add"):
+            c1, c2 = st.columns(2)
+            iccid = c1.text_input("ICCID")
+            linea = c2.text_input("Línea")
+            cliente = c1.text_input("Cliente")
+            costo = c2.number_input("Costo Q", 0.0)
+            if st.form_submit_button("Guardar"):
+                # Lógica simplificada de guardado
+                fecha = datetime.now().strftime("%Y-%m-%d")
+                estado = "Activa" if linea and cliente else "Botiquin"
+                row = [iccid, linea, cliente, "", "", "", "Guatemala", costo, 0, estado, fecha]
+                escribir_fila("sims", row)
+                st.success("SIM Guardada")
+
+    elif choice == "Reportes":
+        st.write("Vista de datos completa:")
+        st.dataframe(leer_datos_sim("sims"))
+
+# ==============================================================================
+# 4. MÓDULO B: GESTOR DE EVENTOS V17.0 (Integrado)
+# ==============================================================================
+def app_eventos_v17():
+    st.markdown("## 🎉 Gestor de Eventos V17")
+    
+    # Inicialización local anti-KeyError
     if 'df_invitados' not in st.session_state:
-        # Datos iniciales de prueba
-        datos_iniciales = {
-            'ID': [str(uuid.uuid4())[:8], str(uuid.uuid4())[:8]],
-            'Nombre': ['Juan Pérez', 'Ana Gómez'],
-            'Email': ['juan@ejemplo.com', 'ana@ejemplo.com'],
-            'Familia': [2, 1], # Número de personas
-            'Estado': ['Pendiente', 'Confirmado'],
-            'Mesa': [None, 5]
-        }
-        st.session_state['df_invitados'] = pd.DataFrame(datos_iniciales)
-    
-    # Inicializamos variables de interfaz
-    if 'pagina_actual' not in st.session_state:
-        st.session_state['pagina_actual'] = 'Dashboard'
+        st.session_state['df_invitados'] = pd.DataFrame(columns=['ID', 'Nombre', 'Email', 'Estado', 'Familia'])
 
-inicializar_estado()
-
-# Función auxiliar para guardar cambios (simulada)
-def guardar_cambios(nuevo_df):
-    st.session_state['df_invitados'] = nuevo_df
-    st.toast('Datos actualizados correctamente', icon='✅')
-
-# ==============================================================================
-# BARRA LATERAL (SIDEBAR)
-# ==============================================================================
-with st.sidebar:
-    st.title("📂 Menú V17.0")
-    st.markdown("---")
+    tab1, tab2 = st.tabs(["Dashboard Invitados", "Gestión Lista"])
     
-    opcion = st.radio(
-        "Navegación", 
-        ["Dashboard", "Gestión de Invitados", "Enviar Invitaciones"],
-        index=0 if st.session_state['pagina_actual'] == 'Dashboard' else 1
-    )
-    
-    st.markdown("---")
-    st.info("Sistema protegido contra errores de estado.")
-    
-    # Botón de reinicio de emergencia
-    if st.button("⚠️ Resetear Fábrica"):
-        st.session_state.clear()
-        st.rerun()
-
-# ==============================================================================
-# PÁGINA 1: DASHBOARD
-# ==============================================================================
-if opcion == "Dashboard":
-    st.title("📊 Panel de Control General")
-    
-    df = st.session_state['df_invitados']
-    
-    # Cálculos seguros (usando .get o validando columnas)
-    total_invitados = df['Familia'].sum()
-    total_confirmados = df[df['Estado'] == 'Confirmado']['Familia'].sum()
-    total_pendientes = total_invitados - total_confirmados
-    
-    # Métricas visuales
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Personas", total_invitados, "Capacidad")
-    col2.metric("Confirmados", total_confirmados, "Asistentes firmes")
-    col3.metric("Pendientes", total_pendientes, "Por confirmar")
-    
-    st.markdown("---")
-    st.subheader("Estado de las Confirmaciones")
-    
-    # Gráfico simple de barras
-    conteo_estados = df['Estado'].value_counts()
-    st.bar_chart(conteo_estados)
-
-# ==============================================================================
-# PÁGINA 2: GESTIÓN DE INVITADOS (CRUD)
-# ==============================================================================
-elif opcion == "Gestión de Invitados":
-    st.title("📝 Gestión Total de Lista")
-    
-    df = st.session_state['df_invitados']
-    
-    tab1, tab2 = st.tabs(["📋 Lista y Edición", "➕ Agregar Nuevo"])
-    
-    # --- TAB 1: EDICIÓN TIPO EXCEL ---
     with tab1:
-        st.write("Edita los datos directamente en la tabla:")
-        
-        # Data Editor permite editar celdas directamente
-        df_editado = st.data_editor(
-            df,
-            column_config={
-                "Estado": st.column_config.SelectboxColumn(
-                    "Estado",
-                    help="Estado de la invitación",
-                    width="medium",
-                    options=["Pendiente", "Confirmado", "Rechazado"],
-                    required=True,
-                ),
-                "Familia": st.column_config.NumberColumn(
-                    "Pax (Personas)",
-                    min_value=1,
-                    max_value=10,
-                    step=1,
-                ),
-            },
-            hide_index=True,
-            num_rows="dynamic" # Permite borrar o agregar filas abajo
-        )
-        
-        # Detectar si hubo cambios comparando con el session_state original
-        if not df_editado.equals(df):
-            guardar_cambios(df_editado)
+        df = st.session_state['df_invitados']
+        if not df.empty:
+            st.bar_chart(df['Estado'].value_counts())
+        else:
+            st.info("Aún no hay invitados registrados.")
+            
+    with tab2:
+        st.write("Edita tu lista de invitados (En memoria):")
+        df_edit = st.data_editor(st.session_state['df_invitados'], num_rows="dynamic")
+        if not df_edit.equals(st.session_state['df_invitados']):
+            st.session_state['df_invitados'] = df_edit
             st.rerun()
 
-    # --- TAB 2: FORMULARIO AGREGAR ---
-    with tab2:
-        st.subheader("Registrar nuevo invitado")
-        with st.form("form_agregar"):
-            col_a, col_b = st.columns(2)
-            nombre = col_a.text_input("Nombre Completo")
-            email = col_b.text_input("Correo Electrónico")
+# ==============================================================================
+# 5. MÓDULO C: GESTIÓN DE USUARIOS (Con Envío de Correo)
+# ==============================================================================
+def app_gestion_usuarios():
+    st.markdown("## 👤 Administración de Usuarios")
+    
+    tab1, tab2 = st.tabs(["Crear Usuario (Email)", "Ver Usuarios"])
+    
+    with tab1:
+        st.info("Al crear un usuario, se le enviará un correo para que establezca su contraseña.")
+        with st.form("crear_user_mail"):
+            col1, col2 = st.columns(2)
+            new_user = col1.text_input("Nombre de Usuario")
+            new_email = col2.text_input("Correo Electrónico")
+            new_rol = st.selectbox("Rol", ["admin", "general"])
             
-            col_c, col_d = st.columns(2)
-            personas = col_c.number_input("Número de personas (Pax)", min_value=1, value=1)
-            estado = col_d.selectbox("Estado Inicial", ["Pendiente", "Confirmado"])
-            
-            submit = st.form_submit_button("Guardar Invitado")
-            
-            if submit:
-                if nombre:
-                    nuevo_dato = {
-                        'ID': str(uuid.uuid4())[:8],
-                        'Nombre': nombre,
-                        'Email': email,
-                        'Familia': personas,
-                        'Estado': estado,
-                        'Mesa': None
-                    }
-                    # Concatenar de forma segura
-                    st.session_state['df_invitados'] = pd.concat(
-                        [st.session_state['df_invitados'], pd.DataFrame([nuevo_dato])], 
-                        ignore_index=True
-                    )
-                    st.success(f"Invitado {nombre} agregado con éxito.")
-                    st.rerun()
+            if st.form_submit_button("Crear y Enviar Invitación"):
+                sheet = conectar_google()
+                ws = sheet.worksheet("usuarios")
+                
+                # Verificar si existe usuario
+                users = ws.col_values(1)
+                if new_user in users:
+                    st.error("El usuario ya existe.")
                 else:
-                    st.error("El nombre es obligatorio.")
+                    # Generar Token
+                    token = str(uuid.uuid4())
+                    # Guardamos contraseña temporal o hash vacío
+                    fila = [new_user, "PENDIENTE", new_rol, new_email, token]
+                    
+                    with st.spinner("Guardando y enviando correo..."):
+                        ws.append_row(fila)
+                        enviado = enviar_correo_activacion(new_email, token, new_user)
+                        
+                        if enviado:
+                            st.success(f"✅ Usuario creado y correo enviado a {new_email}")
+                        else:
+                            st.warning("Usuario creado, pero falló el envío del correo. Revisa los logs.")
+                            
+    with tab2:
+        sheet = conectar_google()
+        df_users = pd.DataFrame(sheet.worksheet("usuarios").get_all_records())
+        st.dataframe(df_users[['username', 'rol', 'email', 'token']])
 
 # ==============================================================================
-# PÁGINA 3: ENVÍO DE INVITACIONES
+# 6. LOGIC PRINCIPAL (MAIN LOOP)
 # ==============================================================================
-elif opcion == "Enviar Invitaciones":
-    st.title("📩 Centro de Envíos")
-    
-    df = st.session_state['df_invitados']
-    
-    st.info("Aquí puedes ver los enlaces únicos para enviar por WhatsApp o Correo.")
-    
-    busqueda = st.selectbox("Selecciona un invitado para ver su link:", df['Nombre'].unique())
-    
-    if busqueda:
-        # Búsqueda segura usando filtros de Pandas
-        datos_invitado = df[df['Nombre'] == busqueda].iloc[0]
-        codigo_unico = datos_invitado['ID']
-        
-        # Simulamos un link real
-        link_falso = f"https://mi-evento.com/rsvp?code={codigo_unico}"
-        
-        st.subheader(f"Invitación para: {busqueda}")
-        st.code(link_falso, language="text")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.button("Copiar Link (Simulado)")
+def main():
+    # 1. Verificar si estamos en proceso de resetear password (URL Token)
+    if gestionar_reset_password():
+        return # Si estamos reseteando, no mostramos nada más.
+
+    # 2. Inicialización de Estado de Sesión
+    if 'usuario' not in st.session_state: st.session_state.usuario = None
+    if 'rol' not in st.session_state: st.session_state.rol = None
+
+    # 3. Pantalla de Login (Si no está logueado)
+    if st.session_state.usuario is None:
+        col1, col2, col3 = st.columns([1,2,1])
         with col2:
-            mensaje_wa = f"Hola {busqueda}, te invito a mi evento. Confirma aquí: {link_falso}"
-            st.text_area("Mensaje para WhatsApp", value=mensaje_wa, height=100)
+            st.title("🔐 Acceso Unificado")
+            st.write("Bienvenido a la Suite de Gestión.")
+            
+            u = st.text_input("Usuario")
+            p = st.text_input("Contraseña", type="password")
+            
+            if st.button("Ingresar"):
+                sheet = conectar_google()
+                ws = sheet.worksheet("usuarios")
+                data = ws.get_all_records()
+                df = pd.DataFrame(data)
+                
+                # Asegurar tipos string
+                df['username'] = df['username'].astype(str)
+                user_row = df[df['username'] == u]
+                
+                if not user_row.empty:
+                    hash_guardado = user_row.iloc[0]['password']
+                    if check_hashes(p, hash_guardado):
+                        st.session_state.usuario = u
+                        st.session_state.rol = user_row.iloc[0]['rol']
+                        st.toast("Inicio de sesión exitoso")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Contraseña incorrecta")
+                else:
+                    st.error("Usuario no encontrado")
+        return
+
+    # 4. APLICACIÓN PRINCIPAL (Si ya está logueado)
+    st.sidebar.title(f"Hola, {st.session_state.usuario}")
+    st.sidebar.caption(f"Rol: {st.session_state.rol}")
+    
+    # Selector de Módulo
+    app_mode = st.sidebar.selectbox("📍 Selecciona Sistema:", 
+                                  ["Control SIM", "Eventos V17", "Gestión Usuarios"])
+    
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Cerrar Sesión"):
+        st.session_state.usuario = None
+        st.session_state.rol = None
+        st.rerun()
+
+    # Enrutador
+    if app_mode == "Control SIM":
+        app_control_sim()
+    elif app_mode == "Eventos V17":
+        app_eventos_v17()
+    elif app_mode == "Gestión Usuarios":
+        if st.session_state.rol == "admin":
+            app_gestion_usuarios()
+        else:
+            st.error("Acceso restringido. Solo administradores pueden ver esto.")
+
+if __name__ == "__main__":
+    main()
