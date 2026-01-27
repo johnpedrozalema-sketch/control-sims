@@ -6,7 +6,6 @@ from datetime import datetime
 import time
 import hashlib
 import io
-import json
 import pytz
 import uuid
 import smtplib
@@ -16,7 +15,7 @@ from email.mime.multipart import MIMEMultipart
 # ==============================================================================
 # 1. CONFIGURACIÓN GLOBAL
 # ==============================================================================
-st.set_page_config(page_title="Suite Gestión Total", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="wide")
 
 # Constantes
 NOMBRE_HOJA = "Base de Datos SIMs"
@@ -24,7 +23,7 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'credenciales.json'
 
 # ==============================================================================
-# 2. FUNCIONES DE UTILIDAD COMPARTIDAS (Conexión, Seguridad, Email)
+# 2. FUNCIONES DE UTILIDAD (Conexión, Seguridad, Email)
 # ==============================================================================
 
 def make_hashes(password):
@@ -71,26 +70,18 @@ def conectar_google():
             st.stop()
 
 # --- FUNCIONES DE EMAIL ---
-def enviar_correo_activacion(email_destino, token, usuario):
+def enviar_correo_sistema(email_destino, asunto, mensaje_html):
+    """Función genérica para enviar correos"""
     try:
         EMAIL_EMISOR = st.secrets["email"]["address"]
         EMAIL_PASS = st.secrets["email"]["password"]
-        BASE_URL = st.secrets["email"].get("base_url", "http://localhost:8501")
-        
-        link = f"{BASE_URL}/?token_reset={token}"
         
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMISOR
         msg['To'] = email_destino
-        msg['Subject'] = "🔐 Activa tu cuenta - Control SIM"
+        msg['Subject'] = asunto
 
-        cuerpo = f"""
-        Hola {usuario},
-        
-        Bienvenido al sistema. Para configurar tu contraseña, haz clic aquí:
-        {link}
-        """
-        msg.attach(MIMEText(cuerpo, 'plain'))
+        msg.attach(MIMEText(mensaje_html, 'html')) # Enviamos como HTML para mejor formato
 
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -102,10 +93,38 @@ def enviar_correo_activacion(email_destino, token, usuario):
         st.error(f"Error enviando correo: {e}")
         return False
 
+def enviar_link_activacion(email_destino, token, nombre):
+    BASE_URL = st.secrets["email"].get("base_url", "http://localhost:8501")
+    link = f"{BASE_URL}/?token_reset={token}"
+    
+    cuerpo = f"""
+    <h3>Bienvenido/a {nombre}</h3>
+    <p>Se ha creado una cuenta para ti en el Sistema de Control SIM.</p>
+    <p>Para definir tu contraseña y acceder, haz clic en el siguiente enlace:</p>
+    <p><a href="{link}">Configurar mi contraseña</a></p>
+    <br>
+    <p>Si el enlace no funciona, copia y pega esto en tu navegador:</p>
+    <p>{link}</p>
+    """
+    return enviar_correo_sistema(email_destino, "🔐 Activa tu cuenta - Control SIM", cuerpo)
+
+def enviar_link_recuperacion(email_destino, token, nombre):
+    BASE_URL = st.secrets["email"].get("base_url", "http://localhost:8501")
+    link = f"{BASE_URL}/?token_reset={token}"
+    
+    cuerpo = f"""
+    <h3>Hola {nombre}</h3>
+    <p>Has solicitado recuperar tu contraseña.</p>
+    <p>Haz clic abajo para crear una nueva:</p>
+    <p><a href="{link}">Restablecer Contraseña</a></p>
+    <p>Si no fuiste tú, ignora este mensaje.</p>
+    """
+    return enviar_correo_sistema(email_destino, "🔄 Recuperación de Contraseña", cuerpo)
+
 def gestionar_reset_password():
     token_url = st.query_params.get("token_reset", None)
     if token_url:
-        st.info("🔄 Modo Recuperación de Cuenta")
+        st.info("🔄 Gestión de Credenciales")
         sheet = conectar_google()
         ws = sheet.worksheet("usuarios")
         data = ws.get_all_records()
@@ -117,31 +136,33 @@ def gestionar_reset_password():
         
         if not usuario_encontrado.empty:
             user_row = usuario_encontrado.iloc[0]
-            st.success(f"Hola {user_row['username']}, crea tu contraseña.")
+            st.write(f"Hola **{user_row['nombre']}**, por favor define tu nueva contraseña.")
+            
             with st.form("reset_pass"):
                 p1 = st.text_input("Nueva Contraseña", type="password")
-                p2 = st.text_input("Confirmar", type="password")
-                if st.form_submit_button("Guardar"):
+                p2 = st.text_input("Confirmar Contraseña", type="password")
+                if st.form_submit_button("Guardar y Acceder"):
                     if p1 == p2 and len(p1) > 4:
                         cell = ws.find(token_url)
                         # Actualizar pass y borrar token
+                        # COLUMNAS: email(1), password(2), rol(3), nombre(4), token(5)
                         ws.update_cell(cell.row, 2, make_hashes(p1)) 
                         ws.update_cell(cell.row, 5, "") 
-                        st.success("Contraseña actualizada. Ingresa ahora.")
+                        st.success("¡Contraseña actualizada! Redirigiendo...")
                         st.query_params.clear()
                         time.sleep(2)
                         st.rerun()
                     else:
-                        st.error("Las contraseñas no coinciden.")
+                        st.error("Las contraseñas no coinciden o son muy cortas (min 5).")
         else:
-            st.error("Enlace inválido o expirado.")
-            if st.button("Ir al inicio"):
+            st.error("Este enlace ya fue usado o ha expirado.")
+            if st.button("Ir al Inicio de Sesión"):
                 st.query_params.clear(); st.rerun()
         return True
     return False
 
 # ==============================================================================
-# 3. LÓGICA DE NEGOCIO ORIGINAL (SIMS) - Restaurada
+# 3. LÓGICA DE NEGOCIO SIMS
 # ==============================================================================
 
 @st.cache_data(ttl=10)
@@ -208,7 +229,7 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
     except:
         return False
 
-# --- LÓGICA FINANCIERA Y CARGA MASIVA (ORIGINAL) ---
+# --- LÓGICA FINANCIERA Y CARGA MASIVA ---
 def limpiar_moneda(valor):
     if isinstance(valor, (int, float)): return float(valor)
     valor = str(valor).strip().replace("Q", "").replace("$", "")
@@ -312,14 +333,14 @@ def cancelar_servicio(iccid, usuario, motivo):
     return False
 
 # ==============================================================================
-# 4. MÓDULO A: INTERFAZ DE CONTROL SIM (TU CÓDIGO ORIGINAL UI)
+# 4. APLICACIÓN PRINCIPAL (UI)
 # ==============================================================================
 
 def app_control_sim():
-    # --- Configuración Sidebar Específica del Módulo ---
+    # --- Sidebar ---
     st.sidebar.markdown("### 📱 Menú SIMs")
     
-    # Configuración de Zona Horaria (Original)
+    # Configuración de Zona Horaria
     zonas_disponibles = ["America/Guatemala", "America/Bogota", "America/Mexico_City", "UTC"]
     st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas_disponibles, index=0)
     st.sidebar.caption(f"Hora: {obtener_hora_actual()}")
@@ -337,24 +358,25 @@ def app_control_sim():
         st.title("📊 Tablero de Control")
         df = leer_datos("sims")
         if not df.empty and 'estado' in df.columns:
-            # Tarjetas
+            # Tarjetas de Inventario (Para todos)
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Inventario", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
 
-            # Financiero
-            st.markdown("---")
-            st.subheader("💰 Facturación Mensual Estimada (Solo Activas)")
-            df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
-            df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
-            df_activas = df[df['estado'] == 'Activa']
-            total_q = df_activas['costo_q_calc'].sum()
-            total_d = df_activas['costo_d_calc'].sum()
-            k1, k2 = st.columns(2)
-            k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
-            k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
+            # Financiero (SOLO ADMIN)
+            if st.session_state.rol == 'admin':
+                st.markdown("---")
+                st.subheader("💰 Facturación Mensual Estimada")
+                df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
+                df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
+                df_activas = df[df['estado'] == 'Activa']
+                total_q = df_activas['costo_q_calc'].sum()
+                total_d = df_activas['costo_d_calc'].sum()
+                k1, k2 = st.columns(2)
+                k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
+                k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
         else:
             st.info("Cargando datos...")
 
@@ -371,262 +393,4 @@ def app_control_sim():
                 linea = c2.text_input("Línea", key=f"l_{kf}")
                 cli = c1.text_input("Cliente", key=f"c_{kf}")
                 pla = c2.text_input("Placa", key=f"p_{kf}")
-                ime = c1.text_input("IMEI", key=f"im_{kf}")
-                plan = c2.text_input("Plan", key=f"pl_{kf}")
-                pais = c1.selectbox("País", ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"], key=f"pa_{kf}")
-                cq = c2.number_input("Costo Q", key=f"cq_{kf}")
-                cd = c1.number_input("Costo $", key=f"cd_{kf}")
-                if st.form_submit_button("Guardar"):
-                    if iccid:
-                        d = {'iccid': iccid, 'numero_linea': linea, 'cliente': cli, 'placa': pla, 'imei': ime, 'tipo_plan': plan, 'pais': pais, 'costo_q': cq, 'costo_d': cd}
-                        with st.spinner("Guardando..."):
-                            if registrar_sim(d, st.session_state.usuario):
-                                st.success("Guardado"); st.session_state.form_id += 1; refrescar_pagina(2)
-                            else: st.error("Duplicado o Error")
-                    else: st.warning("Falta ICCID")
-
-        with tab2:
-            st.markdown("### Carga Masiva (Excel)")
-            df_t = pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d'])
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_t.to_excel(writer, index=False)
-            st.download_button("📥 Plantilla", buffer.getvalue(), "plantilla.xlsx")
-            
-            archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
-            if archivo:
-                try:
-                    df_check = pd.read_excel(archivo)
-                    st.success(f"✅ Archivo leído. Filas: {len(df_check)}")
-                    cols = list(df_check.columns)
-                    def f_idx(t, l):
-                        t=t.lower()
-                        for i,c in enumerate(l):
-                            if t in str(c).lower(): return i
-                        return 0
-                    
-                    st.write("Confirma columnas:")
-                    c1,c2,c3 = st.columns(3)
-                    si = c1.selectbox("ICCID", cols, index=f_idx("iccid",cols))
-                    sl = c2.selectbox("Línea", cols, index=f_idx("linea",cols))
-                    sc = c3.selectbox("Cliente", cols, index=f_idx("cliente",cols))
-                    c4,c5,c6 = st.columns(3)
-                    sp = c4.selectbox("Placa", cols, index=f_idx("placa",cols))
-                    sim = c5.selectbox("IMEI", cols, index=f_idx("imei",cols))
-                    spl = c6.selectbox("Plan", cols, index=f_idx("plan",cols))
-                    c7,c8,c9 = st.columns(3)
-                    spa = c7.selectbox("País", cols, index=f_idx("pais",cols))
-                    scq = c8.selectbox("Costo Q", cols, index=f_idx("costo q",cols))
-                    scd = c9.selectbox("Costo $", cols, index=f_idx("costo",cols))
-
-                    if st.button(f"Procesar {len(df_check)} filas"):
-                        df_final = pd.DataFrame()
-                        df_final['iccid'] = df_check[si]
-                        df_final['numero_linea'] = df_check[sl]
-                        df_final['cliente'] = df_check[sc]
-                        df_final['placa'] = df_check[sp]
-                        df_final['imei'] = df_check[sim]
-                        df_final['tipo_plan'] = df_check[spl]
-                        df_final['pais'] = df_check[spa]
-                        df_final['costo_q'] = df_check[scq]
-                        df_final['costo_d'] = df_check[scd]
-                        
-                        with st.spinner("Enviando a Google..."):
-                            c, e = procesar_carga_masiva_turbo(df_final, st.session_state.usuario)
-                            st.success(f"✅ Éxito: {c} nuevas | {e} duplicados")
-                            refrescar_pagina(5)
-                except Exception as e: st.error(f"Error: {e}")
-
-    # --- PANTALLA ACTUALIZAR ---
-    elif choice == "Actualizar Datos":
-        st.subheader("✏️ Editar")
-        df = leer_datos("sims")
-        if not df.empty and 'iccid' in df.columns:
-            df['iccid'] = df['iccid'].astype(str)
-            df['disp'] = df['iccid'] + " | " + df['cliente'].astype(str)
-            sel = st.selectbox("Buscar:", df['disp'].tolist(), index=None, placeholder="Escribe...")
-            if sel:
-                ic = sel.split(" | ")[0]
-                cur = df[df['iccid']==ic].iloc[0]
-                with st.form("ed"):
-                    c1, c2 = st.columns(2)
-                    nl = c1.text_input("Línea", value=cur['numero_linea'])
-                    nc = c2.text_input("Cliente", value=cur['cliente'])
-                    np = c1.text_input("Placa", value=cur['placa'])
-                    ni = c2.text_input("IMEI", value=cur['imei'])
-                    npl = c1.text_input("Plan", value=cur['tipo_plan'])
-                    paises = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
-                    try: idx = paises.index(cur['pais'])
-                    except: idx = 0
-                    npa = c2.selectbox("País", paises, index=idx)
-                    v_q = limpiar_moneda(cur['costo_q'])
-                    v_d = limpiar_moneda(cur['costo_d'])
-                    ncq = c1.number_input("Costo Q", value=v_q)
-                    ncd = c2.number_input("Costo $", value=v_d)
-                    if st.form_submit_button("Actualizar"):
-                        d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': ni, 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
-                        with st.spinner("Actualizando..."):
-                            if actualizar_datos_sim(ic, d, st.session_state.usuario):
-                                st.success("Listo"); refrescar_pagina(2)
-
-    # --- PANTALLA TRASLADOS ---
-    elif choice == "Traslados":
-        st.subheader("🔄 Traslados")
-        df = leer_datos("sims")
-        if not df.empty and 'iccid' in df.columns:
-            df['iccid'] = df['iccid'].astype(str)
-            dfo = df[~df['estado'].isin(['Retirada','Cancelada'])]
-            dfd = df[df['estado']=='Botiquin']
-            dfo['disp'] = dfo['iccid'] + " (" + dfo['numero_linea'].astype(str) + ")"
-            c1, c2 = st.columns(2)
-            orig = c1.selectbox("Vieja", dfo['disp'].tolist(), index=None, placeholder="Buscar...")
-            dest = c2.selectbox("Nueva", dfd['iccid'].tolist(), index=None, placeholder="Buscar...")
-            if orig and dest:
-                if st.button("Trasladar"):
-                    with st.spinner("Procesando..."):
-                        ok, msg = traslado_sim(orig.split(" (")[0], dest, st.session_state.usuario)
-                        if ok: st.balloons(); st.success(msg); refrescar_pagina(3)
-                        else: st.error(msg)
-
-    # --- PANTALLA CANCELAR ---
-    elif choice == "Cancelar/Gestionar":
-        st.subheader("⚠️ Cancelar")
-        df = leer_datos("sims")
-        if not df.empty and 'iccid' in df.columns:
-            df['iccid'] = df['iccid'].astype(str)
-            dfc = df[df['estado']!='Cancelada']
-            dfc['disp'] = dfc['iccid'] + " | " + dfc['cliente'].astype(str)
-            sel = st.selectbox("Buscar:", dfc['disp'].tolist(), index=None, placeholder="Buscar...")
-            if sel:
-                mot = st.text_input("Motivo")
-                if st.button("Confirmar"):
-                    with st.spinner("Cancelando..."):
-                        if cancelar_servicio(sel.split(" | ")[0], st.session_state.usuario, mot):
-                            st.success("Listo"); refrescar_pagina(2)
-
-    # --- PANTALLA REPORTES ---
-    elif choice == "Reportes":
-        st.subheader("📑 Reportes")
-        df = leer_datos("sims")
-        if not df.empty:
-            try:
-                p = st.sidebar.multiselect("Filtrar País", df['pais'].unique())
-                if p: df = df[df['pais'].isin(p)]
-            except: pass
-            
-            df_export = df.copy()
-            try:
-                df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
-                df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
-            except: pass
-
-            st.dataframe(df_export)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
-            st.download_button("Excel (Con Formato)", buffer.getvalue(), "reporte_sims.xlsx")
-
-# ==============================================================================
-# 5. MÓDULO B: GESTOR DE EVENTOS V17
-# ==============================================================================
-def app_eventos_v17():
-    st.markdown("## 🎉 Gestor de Eventos V17")
-    if 'df_invitados' not in st.session_state:
-        st.session_state['df_invitados'] = pd.DataFrame(columns=['ID', 'Nombre', 'Email', 'Estado', 'Familia'])
-
-    tab1, tab2 = st.tabs(["Dashboard Invitados", "Gestión Lista"])
-    with tab1:
-        df = st.session_state['df_invitados']
-        if not df.empty:
-            col1, col2 = st.columns(2)
-            col1.metric("Total Confirmados", len(df[df['Estado']=='Confirmado']))
-            col2.metric("Pendientes", len(df[df['Estado']=='Pendiente']))
-            st.bar_chart(df['Estado'].value_counts())
-        else: st.info("Sin datos.")
-    with tab2:
-        df_edit = st.data_editor(st.session_state['df_invitados'], num_rows="dynamic")
-        if not df_edit.equals(st.session_state['df_invitados']):
-            st.session_state['df_invitados'] = df_edit
-            st.rerun()
-
-# ==============================================================================
-# 6. MÓDULO C: GESTIÓN USUARIOS (CON EMAIL)
-# ==============================================================================
-def app_gestion_usuarios():
-    st.markdown("## 👤 Administración Usuarios")
-    tab1, tab2 = st.tabs(["Crear Usuario", "Ver Lista"])
-    
-    with tab1:
-        st.info("Se enviará un correo de activación.")
-        with st.form("crear_user_mail"):
-            col1, col2 = st.columns(2)
-            new_user = col1.text_input("Usuario")
-            new_email = col2.text_input("Email")
-            new_rol = st.selectbox("Rol", ["admin", "general"])
-            
-            if st.form_submit_button("Crear"):
-                sheet = conectar_google()
-                ws = sheet.worksheet("usuarios")
-                users = ws.col_values(1)
-                if new_user in users: st.error("Usuario ya existe")
-                else:
-                    token = str(uuid.uuid4())
-                    fila = [new_user, "PENDIENTE", new_rol, new_email, token]
-                    with st.spinner("Enviando..."):
-                        ws.append_row(fila)
-                        if enviar_correo_activacion(new_email, token, new_user):
-                            st.success(f"Correo enviado a {new_email}")
-                        else: st.warning("Creado, pero falló el correo.")
-    with tab2:
-        sheet = conectar_google()
-        st.dataframe(pd.DataFrame(sheet.worksheet("usuarios").get_all_records())[['username','rol','email','token']])
-
-# ==============================================================================
-# 7. MAIN LOOP
-# ==============================================================================
-def main():
-    if gestionar_reset_password(): return
-
-    if 'usuario' not in st.session_state: st.session_state.usuario = None
-    if 'rol' not in st.session_state: st.session_state.rol = None
-
-    if st.session_state.usuario is None:
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2:
-            st.title("🔐 Acceso Unificado")
-            u = st.text_input("Usuario")
-            p = st.text_input("Contraseña", type="password")
-            if st.button("Ingresar"):
-                try:
-                    sheet = conectar_google()
-                    ws = sheet.worksheet("usuarios")
-                    df = pd.DataFrame(ws.get_all_records())
-                    df['username'] = df['username'].astype(str)
-                    user_row = df[df['username'] == u]
-                    if not user_row.empty:
-                        hash_guardado = str(user_row.iloc[0]['password'])
-                        if check_hashes(p, hash_guardado):
-                            st.session_state.usuario = u
-                            st.session_state.rol = user_row.iloc[0]['rol']
-                            st.rerun()
-                        else: st.error("Clave incorrecta")
-                    else: st.error("Usuario no encontrado")
-                except Exception as e: st.error(f"Error login: {e}")
-        return
-
-    # --- SIDEBAR PRINCIPAL ---
-    st.sidebar.title(f"👤 {st.session_state.usuario}")
-    st.sidebar.caption(f"Rol: {st.session_state.rol}")
-    app_mode = st.sidebar.selectbox("📍 SISTEMA:", ["Control SIM", "Eventos V17", "Gestión Usuarios"])
-    st.sidebar.markdown("---")
-    
-    if app_mode == "Control SIM": app_control_sim()
-    elif app_mode == "Eventos V17": app_eventos_v17()
-    elif app_mode == "Gestión Usuarios":
-        if st.session_state.rol == "admin": app_gestion_usuarios()
-        else: st.error("Acceso Denegado")
-
-    if st.sidebar.button("Cerrar Sesión"):
-        st.session_state.usuario = None
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
+                ime = c1
