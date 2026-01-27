@@ -34,7 +34,6 @@ def refrescar_pagina(segundos=3):
 # ==========================================
 def conectar_google():
     try:
-        # Intenta usar Secretos (Nube) o Archivo Local (PC)
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.session_state.secrets["gcp_service_account"]) if "secrets" in st.session_state else st.secrets["gcp_service_account"]
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
@@ -92,11 +91,42 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO
+# 3. LÓGICA DE NEGOCIO Y "EL RASTREADOR"
 # ==========================================
 
+def rastrear_encabezados(df):
+    """
+    Busca en las primeras 10 filas dónde diablos está la palabra 'iccid'.
+    Si la encuentra, recorta el DataFrame para que empiece desde ahí.
+    """
+    # 1. Limpiamos las columnas actuales por si acaso
+    df.columns = [str(c).lower().strip() for c in df.columns]
+    
+    # Si ya está en la fila 0, perfecto.
+    if 'iccid' in df.columns:
+        return df
+
+    # Si no, buscamos fila por fila
+    for i in range(10): # Busca en las primeras 10 filas
+        if i >= len(df): break
+        
+        # Convertimos la fila a texto y minúsculas para buscar
+        fila = df.iloc[i].astype(str).str.lower().str.strip().tolist()
+        
+        if 'iccid' in fila:
+            # ¡ENCONTRADO! Esta fila 'i' es el verdadero encabezado
+            st.toast(f"Encabezados encontrados en la fila {i+1}", icon="🕵️")
+            
+            # Renombramos las columnas con los valores de esta fila
+            df.columns = df.iloc[i].astype(str).str.lower().str.strip()
+            
+            # Cortamos el dataframe para quedarnos solo con lo que está debajo
+            df = df[i+1:].reset_index(drop=True)
+            return df
+            
+    return df # Si no lo encuentra, devuelve el original (fallará luego, pero lo intentamos)
+
 def registrar_sim(datos, usuario):
-    # Verificamos duplicados antes de escribir
     df = leer_datos("sims")
     df['iccid'] = df['iccid'].astype(str)
     if str(datos['iccid']) in df['iccid'].values:
@@ -118,27 +148,23 @@ def procesar_carga_masiva_segura(df, usuario):
     correctos = 0
     errores = 0
     
-    # 1. LIMPIEZA DE COLUMNAS (Convertir a minúsculas y quitar espacios)
-    df.columns = [str(c).lower().strip() for c in df.columns]
+    # PASO CRÍTICO: Rastrear dónde están los títulos
+    df = rastrear_encabezados(df)
     
-    # 2. VERIFICACIÓN: Si no existe 'iccid', paramos y avisamos
+    # Validación final
     if 'iccid' not in df.columns:
         cols_encontradas = ", ".join(list(df.columns))
-        return 0, 0, f"⚠️ ERROR DE FORMATO: No encuentro la columna 'iccid'. \nLas columnas que leo en tu archivo son: [{cols_encontradas}]. \nPor favor revisa que la fila 1 del Excel tenga los títulos."
+        return 0, 0, f"⚠️ ERROR FATAL: Ni siquiera buscando en las primeras 10 filas encontré una celda que diga 'iccid'. \nLo que veo es: [{cols_encontradas}]. \nPor favor, descarga la plantilla de nuevo."
 
-    # 3. Limpieza de datos
+    # Limpieza
     df = df.fillna("")
-    
-    # Convertimos iccid a texto de forma segura
     df['iccid'] = df['iccid'].astype(str).str.replace(".0", "", regex=False)
 
     for index, row in df.iterrows():
-        # Saltamos filas vacías
         iccid_val = str(row['iccid']).strip()
-        if not iccid_val or iccid_val.lower() == 'nan':
+        if not iccid_val or iccid_val.lower() == 'nan' or iccid_val.lower() == 'iccid': # Saltamos si se repite el título
             continue
 
-        # Usamos .get() para que no falle si falta alguna columna opcional
         datos = {
             'iccid': iccid_val, 
             'numero_linea': str(row.get('numero_linea', '')).replace(".0", ""), 
@@ -304,13 +330,17 @@ def main():
             
             archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
             if archivo:
-                # LECTURA DE DIAGNÓSTICO
                 try:
+                    # LEEMOS TODO TAL CUAL VIENE
                     df_check = pd.read_excel(archivo)
-                    st.info(f"📋 **Columnas detectadas en tu archivo:** {list(df_check.columns)}")
+                    st.info("🔎 Analizando archivo...")
                     
+                    # MOSTRAR LO QUE VE EL PROGRAMA (Diagnóstico visual)
+                    with st.expander("Ver contenido del archivo (Clic aquí si hay error)"):
+                        st.dataframe(df_check.head())
+
                     if st.button("Procesar Archivo"):
-                        with st.spinner("Procesando..."):
+                        with st.spinner("Buscando encabezados y procesando..."):
                             c, e, msg = procesar_carga_masiva_segura(df_check, st.session_state.usuario)
                         
                         if "ERROR" in msg:
