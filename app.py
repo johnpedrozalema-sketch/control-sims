@@ -649,4 +649,70 @@ def main():
                     try:
                         sheet = conectar_google()
                         ws = sheet.worksheet("usuarios")
-                        df = pd
+                        df = pd.DataFrame(ws.get_all_records())
+                        df['email'] = df['email'].astype(str)
+                        
+                        user_row = df[df['email'] == u]
+                        if not user_row.empty:
+                            hash_guardado = str(user_row.iloc[0]['password'])
+                            if check_hashes(p, hash_guardado):
+                                st.session_state.usuario = u
+                                st.session_state.rol = user_row.iloc[0]['rol']
+                                st.session_state.nombre = user_row.iloc[0]['nombre']
+                                st.toast(f"Bienvenido {st.session_state.nombre}")
+                                time.sleep(1)
+                                st.rerun()
+                            else: st.error("Contraseña incorrecta.")
+                        else: st.error("Usuario no encontrado.")
+                    except Exception as e: st.error(f"Error login: {e}")
+            
+            with tab_recup:
+                st.write("Ingresa tu correo y te enviaremos un enlace para restablecerla.")
+                rec_email = st.text_input("Correo de recuperación")
+                if st.button("Enviar enlace"):
+                    sheet = conectar_google()
+                    ws = sheet.worksheet("usuarios")
+                    df = pd.DataFrame(ws.get_all_records())
+                    df['email'] = df['email'].astype(str)
+                    
+                    user_row = df[df['email'] == rec_email]
+                    if not user_row.empty:
+                        token_nuevo = str(uuid.uuid4())
+                        nombre_user = user_row.iloc[0]['nombre']
+                        
+                        cell = ws.find(rec_email)
+                        ws.update_cell(cell.row, 5, token_nuevo)
+                        
+                        if enviar_link_recuperacion(rec_email, token_nuevo, nombre_user):
+                            st.success("Correo enviado. Revisa tu bandeja de entrada.")
+                        else:
+                            st.error("Error al enviar el correo.")
+                    else:
+                        st.warning("Si el correo existe, se enviará el enlace.")
+
+        return
+
+    # --- SIDEBAR PRINCIPAL (YA LOGUEADO) ---
+    st.sidebar.title(f"👤 {st.session_state.nombre}")
+    st.sidebar.caption(f"{st.session_state.usuario} | {st.session_state.rol}")
+    
+    opciones_sistema = ["Control SIM"]
+    if st.session_state.rol == "admin":
+        opciones_sistema.append("Gestión Usuarios")
+        
+    app_mode = st.sidebar.selectbox("📍 SISTEMA:", opciones_sistema)
+    st.sidebar.markdown("---")
+    
+    if app_mode == "Control SIM": 
+        app_control_sim()
+    elif app_mode == "Gestión Usuarios":
+        app_gestion_usuarios()
+
+    if st.sidebar.button("Cerrar Sesión"):
+        st.session_state.usuario = None
+        st.session_state.nombre = None
+        st.session_state.rol = None
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
