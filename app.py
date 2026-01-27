@@ -205,4 +205,343 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
             estado, fecha_hoy
         ]
         
-        fila_hist = [iccid_val, "Creacion Masiva", f"Carga Excel. Estado: {estado}", usuario,
+        fila_hist = [iccid_val, "Creacion Masiva", f"Carga Excel. Estado: {estado}", usuario, fecha_hoy]
+        nuevas_filas_sims.append(fila_sim)
+        nuevas_filas_historial.append(fila_hist)
+        iccids_existentes.add(iccid_val)
+        correctos += 1
+
+    if nuevas_filas_sims:
+        escribir_lote("sims", nuevas_filas_sims)
+        escribir_lote("historial", nuevas_filas_historial)
+        limpiar_cache()
+        
+    return correctos, duplicados
+
+def login_user(username, password):
+    df = leer_datos("usuarios")
+    if 'username' not in df.columns: return None
+    df['username'] = df['username'].astype(str)
+    user_row = df[df['username'] == username]
+    if not user_row.empty:
+        if check_hashes(password, user_row.iloc[0]['password']):
+            return user_row.iloc[0]['rol']
+    return None
+
+def actualizar_datos_sim(iccid, datos, usuario):
+    linea = str(datos['numero_linea'])
+    cliente = str(datos['cliente'])
+    nuevo_estado = "Activa" if linea and cliente else "Botiquin"
+    datos_full = datos.copy()
+    datos_full['estado'] = nuevo_estado
+    if actualizar_sim_completa(iccid, datos_full):
+        fecha = obtener_hora_actual()
+        escribir_fila("historial", [iccid, "Actualizacion", f"Estado: {nuevo_estado}", usuario, fecha])
+        return True
+    return False
+
+def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
+    df = leer_datos("sims")
+    df['iccid'] = df['iccid'].astype(str)
+    row_old = df[df['iccid'] == str(iccid_antiguo)]
+    if row_old.empty: return False, "ICCID Viejo no existe"
+    row_new = df[df['iccid'] == str(iccid_nuevo)]
+    if row_new.empty: return False, "ICCID Nuevo no existe"
+    if row_new.iloc[0]['estado'] != 'Botiquin': return False, "Nueva SIM no es Botiquín"
+    datos_old = row_old.iloc[0]
+    datos_new = {
+        'numero_linea': datos_old['numero_linea'], 'cliente': datos_old['cliente'],
+        'placa': datos_old['placa'], 'imei': datos_old['imei'], 'tipo_plan': datos_old['tipo_plan'],
+        'pais': datos_old['pais'], 'costo_q': datos_old['costo_q'], 'costo_d': datos_old['costo_d'],
+        'estado': 'Activa'
+    }
+    actualizar_sim_completa(iccid_nuevo, datos_new)
+    actualizar_celda_sim(iccid_antiguo, "estado", "Retirada")
+    actualizar_celda_sim(iccid_antiguo, "numero_linea", "SIM RETIRADA")
+    fecha = obtener_hora_actual()
+    escribir_fila("historial", [iccid_nuevo, "Traslado Entrada", f"De {iccid_antiguo}", usuario, fecha])
+    escribir_fila("historial", [iccid_antiguo, "Traslado Salida", f"A {iccid_nuevo}", usuario, fecha])
+    return True, "Traslado Exitoso"
+
+def cancelar_servicio(iccid, usuario, motivo):
+    if actualizar_celda_sim(iccid, "estado", "Cancelada"):
+        fecha = obtener_hora_actual()
+        escribir_fila("historial", [iccid, "Cancelacion", f"Motivo: {motivo}", usuario, fecha])
+        return True
+    return False
+
+def crear_usuario(username, password, rol):
+    df = leer_datos("usuarios")
+    df['username'] = df['username'].astype(str)
+    if str(username) in df['username'].values: return False
+    escribir_fila("usuarios", [username, make_hashes(password), rol])
+    return True
+
+# ==========================================
+# 4. INTERFAZ GRÁFICA (UI)
+# ==========================================
+def main():
+    if 'usuario' not in st.session_state: st.session_state.usuario = None
+    if 'rol' not in st.session_state: st.session_state.rol = None
+    if 'form_id' not in st.session_state: st.session_state.form_id = 0
+
+    if st.session_state.usuario is None:
+        col1, col2 = st.columns([1,2])
+        with col2:
+            st.title("☁️ Control SIMs")
+            user = st.text_input("Usuario")
+            password = st.text_input("Contraseña", type="password")
+            if st.button("Ingresar"):
+                try:
+                    rol = login_user(user, password)
+                    if rol:
+                        st.session_state.usuario = user
+                        st.session_state.rol = rol
+                        st.rerun()
+                    else: st.error("Incorrecto")
+                except Exception as e: st.error(f"Error Conexión: {e}")
+        return
+
+    st.sidebar.title(f"👤 {st.session_state.usuario}")
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🕒 Zona Horaria")
+    zonas_disponibles = ["America/Guatemala", "America/Bogota", "America/Mexico_City", "America/El_Salvador", "America/Costa_Rica", "UTC"]
+    st.session_state.zona_horaria = st.sidebar.selectbox("Tu Ubicación:", zonas_disponibles, index=0)
+    hora_actual = obtener_hora_actual()
+    st.sidebar.caption(f"Hora: {hora_actual}")
+    st.sidebar.markdown("---")
+
+    menu = ["Dashboard", "Reportes", "Salir"]
+    if st.session_state.rol == "admin":
+        menu = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Usuarios", "Reportes", "Salir"]
+    choice = st.sidebar.radio("Menú", menu)
+
+    if choice == "Salir":
+        st.session_state.usuario = None
+        st.rerun()
+
+    # --- PANTALLAS ---
+    if choice == "Dashboard":
+        st.title("📊 Tablero de Control")
+        df = leer_datos("sims")
+        if not df.empty and 'estado' in df.columns:
+            # 1. TARJETAS DE CONTEO
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Inventario", len(df))
+            c2.metric("Activas", len(df[df['estado']=='Activa']))
+            c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
+            c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
+
+            # 2. SECCIÓN FINANCIERA
+            st.markdown("---")
+            st.subheader("💰 Facturación Mensual Estimada (Solo Activas)")
+            
+            # --- LIMPIEZA INTERNA PARA CÁLCULOS ---
+            # Aquí aplicamos la función limpiar_moneda a CADA celda de costos
+            df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
+            df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
+            
+            # Filtramos solo las ACTIVAS
+            df_activas = df[df['estado'] == 'Activa']
+            
+            total_q = df_activas['costo_q_calc'].sum()
+            total_d = df_activas['costo_d_calc'].sum()
+            
+            k1, k2 = st.columns(2)
+            k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
+            k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
+            
+        else: st.info("Cargando datos...")
+
+    elif choice == "Registrar SIM":
+        st.subheader("➕ Gestión Inventario")
+        tab1, tab2 = st.tabs(["Manual", "Carga Masiva"])
+        
+        with tab1:
+            kf = str(st.session_state.form_id)
+            with st.form("new"):
+                c1, c2 = st.columns(2)
+                iccid = c1.text_input("ICCID*", key=f"i_{kf}")
+                linea = c2.text_input("Línea", key=f"l_{kf}")
+                cli = c1.text_input("Cliente", key=f"c_{kf}")
+                pla = c2.text_input("Placa", key=f"p_{kf}")
+                ime = c1.text_input("IMEI", key=f"im_{kf}")
+                plan = c2.text_input("Plan", key=f"pl_{kf}")
+                pais = c1.selectbox("País", ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"], key=f"pa_{kf}")
+                cq = c2.number_input("Costo Q", key=f"cq_{kf}")
+                cd = c1.number_input("Costo $", key=f"cd_{kf}")
+                if st.form_submit_button("Guardar"):
+                    if iccid:
+                        d = {'iccid': iccid, 'numero_linea': linea, 'cliente': cli, 'placa': pla, 'imei': ime, 'tipo_plan': plan, 'pais': pais, 'costo_q': cq, 'costo_d': cd}
+                        with st.spinner("Guardando..."):
+                            if registrar_sim(d, st.session_state.usuario):
+                                st.success("Guardado"); st.session_state.form_id += 1; refrescar_pagina(2)
+                            else: st.error("Duplicado o Error")
+                    else: st.warning("Falta ICCID")
+
+        with tab2:
+            st.markdown("### Carga Masiva (Excel)")
+            df_t = pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d'])
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_t.to_excel(writer, index=False)
+            st.download_button("📥 Plantilla", buffer.getvalue(), "plantilla.xlsx")
+            
+            archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
+            if archivo:
+                df_check = None
+                try:
+                    df_check = pd.read_excel(archivo)
+                    st.success(f"✅ Archivo leído. Filas detectadas: {len(df_check)}")
+                except: st.error("Error leyendo archivo")
+                
+                if df_check is not None:
+                    cols = list(df_check.columns)
+                    def f_idx(t, l):
+                        t=t.lower()
+                        for i,c in enumerate(l):
+                            if t in str(c).lower(): return i
+                        return 0
+                    
+                    st.write("Confirma columnas:")
+                    c1,c2,c3 = st.columns(3)
+                    si = c1.selectbox("ICCID", cols, index=f_idx("iccid",cols))
+                    sl = c2.selectbox("Línea", cols, index=f_idx("linea",cols))
+                    sc = c3.selectbox("Cliente", cols, index=f_idx("cliente",cols))
+                    
+                    c4,c5,c6 = st.columns(3)
+                    sp = c4.selectbox("Placa", cols, index=f_idx("placa",cols))
+                    sim = c5.selectbox("IMEI", cols, index=f_idx("imei",cols))
+                    spl = c6.selectbox("Plan", cols, index=f_idx("plan",cols))
+                    
+                    c7,c8,c9 = st.columns(3)
+                    spa = c7.selectbox("País", cols, index=f_idx("pais",cols))
+                    scq = c8.selectbox("Costo Q", cols, index=f_idx("costo q",cols))
+                    scd = c9.selectbox("Costo $", cols, index=f_idx("costo",cols))
+
+                    if st.button(f"Procesar {len(df_check)} filas"):
+                        df_final = pd.DataFrame()
+                        df_final['iccid'] = df_check[si]
+                        df_final['numero_linea'] = df_check[sl]
+                        df_final['cliente'] = df_check[sc]
+                        df_final['placa'] = df_check[sp]
+                        df_final['imei'] = df_check[sim]
+                        df_final['tipo_plan'] = df_check[spl]
+                        df_final['pais'] = df_check[spa]
+                        df_final['costo_q'] = df_check[scq]
+                        df_final['costo_d'] = df_check[scd]
+                        
+                        with st.spinner("Enviando a Google..."):
+                            try:
+                                c, e = procesar_carga_masiva_turbo(df_final, st.session_state.usuario)
+                                st.success(f"✅ Éxito: {c} nuevas | {e} duplicados")
+                                refrescar_pagina(5)
+                            except Exception as db_err:
+                                st.error(f"Error: {db_err}")
+
+    elif choice == "Actualizar Datos":
+        st.subheader("✏️ Editar")
+        df = leer_datos("sims")
+        if not df.empty and 'iccid' in df.columns:
+            df['iccid'] = df['iccid'].astype(str)
+            df['disp'] = df['iccid'] + " | " + df['cliente'].astype(str)
+            sel = st.selectbox("Buscar:", df['disp'].tolist(), index=None, placeholder="Escribe...")
+            if sel:
+                ic = sel.split(" | ")[0]
+                cur = df[df['iccid']==ic].iloc[0]
+                with st.form("ed"):
+                    c1, c2 = st.columns(2)
+                    nl = c1.text_input("Línea", value=cur['numero_linea'])
+                    nc = c2.text_input("Cliente", value=cur['cliente'])
+                    np = c1.text_input("Placa", value=cur['placa'])
+                    ni = c2.text_input("IMEI", value=cur['imei'])
+                    npl = c1.text_input("Plan", value=cur['tipo_plan'])
+                    paises = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+                    try: idx = paises.index(cur['pais'])
+                    except: idx = 0
+                    npa = c2.selectbox("País", paises, index=idx)
+                    
+                    # Limpieza para mostrar en el formulario
+                    v_q = limpiar_moneda(cur['costo_q'])
+                    v_d = limpiar_moneda(cur['costo_d'])
+                    
+                    ncq = c1.number_input("Costo Q", value=v_q)
+                    ncd = c2.number_input("Costo $", value=v_d)
+                    if st.form_submit_button("Actualizar"):
+                        d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': ni, 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
+                        with st.spinner("Actualizando..."):
+                            if actualizar_datos_sim(ic, d, st.session_state.usuario):
+                                st.success("Listo"); refrescar_pagina(2)
+
+    elif choice == "Traslados":
+        st.subheader("🔄 Traslados")
+        df = leer_datos("sims")
+        if not df.empty and 'iccid' in df.columns:
+            df['iccid'] = df['iccid'].astype(str)
+            dfo = df[~df['estado'].isin(['Retirada','Cancelada'])]
+            dfd = df[df['estado']=='Botiquin']
+            dfo['disp'] = dfo['iccid'] + " (" + dfo['numero_linea'].astype(str) + ")"
+            c1, c2 = st.columns(2)
+            orig = c1.selectbox("Vieja", dfo['disp'].tolist(), index=None, placeholder="Buscar...")
+            dest = c2.selectbox("Nueva", dfd['iccid'].tolist(), index=None, placeholder="Buscar...")
+            if orig and dest:
+                if st.button("Trasladar"):
+                    with st.spinner("Procesando..."):
+                        ok, msg = traslado_sim(orig.split(" (")[0], dest, st.session_state.usuario)
+                        if ok: st.balloons(); st.success(msg); refrescar_pagina(3)
+                        else: st.error(msg)
+
+    elif choice == "Cancelar/Gestionar":
+        st.subheader("⚠️ Cancelar")
+        df = leer_datos("sims")
+        if not df.empty and 'iccid' in df.columns:
+            df['iccid'] = df['iccid'].astype(str)
+            dfc = df[df['estado']!='Cancelada']
+            dfc['disp'] = dfc['iccid'] + " | " + dfc['cliente'].astype(str)
+            sel = st.selectbox("Buscar:", dfc['disp'].tolist(), index=None, placeholder="Buscar...")
+            if sel:
+                mot = st.text_input("Motivo")
+                if st.button("Confirmar"):
+                    with st.spinner("Cancelando..."):
+                        if cancelar_servicio(sel.split(" | ")[0], st.session_state.usuario, mot):
+                            st.success("Listo"); refrescar_pagina(2)
+
+    elif choice == "Usuarios":
+        st.subheader("👤 Usuarios")
+        if 'uk' not in st.session_state: st.session_state.uk=0
+        k = str(st.session_state.uk)
+        with st.form("us"):
+            c1,c2,c3 = st.columns(3)
+            nu = c1.text_input("User", key=f"u{k}")
+            np = c2.text_input("Pass", type="password", key=f"p{k}")
+            nr = c3.selectbox("Rol", ["admin", "general"], key=f"r{k}")
+            if st.form_submit_button("Crear"):
+                if crear_usuario(nu, np, nr):
+                    st.success("Creado"); st.session_state.uk+=1; refrescar_pagina(2)
+                else: st.error("Error")
+        st.table(leer_datos("usuarios")[['username','rol']])
+
+    elif choice == "Reportes":
+        st.subheader("📑 Reportes")
+        df = leer_datos("sims")
+        if not df.empty:
+            try:
+                p = st.sidebar.multiselect("País", df['pais'].unique())
+                if p: df = df[df['pais'].isin(p)]
+            except: pass
+            
+            # --- FORMATEO BONITO PARA EXPORTAR ---
+            # Creamos una copia para no dañar los datos originales
+            df_export = df.copy()
+            # Aplicamos formato "Q 100.00" solo si es número
+            try:
+                df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
+                df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
+            except: pass # Si falla, deja los datos como están
+
+            st.dataframe(df_export)
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
+            st.download_button("Excel (Con Formato)", buffer.getvalue(), "reporte_sims.xlsx")
+
+if __name__ == "__main__":
+    main()
