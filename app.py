@@ -30,7 +30,7 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 # ==========================================
-# 2. CONEXIÓN CON GOOGLE SHEETS
+# 2. CONEXIÓN Y "DOCTOR" DE GOOGLE SHEETS
 # ==========================================
 def conectar_google():
     try:
@@ -47,10 +47,59 @@ def conectar_google():
         st.error(f"Error de conexión: {e}")
         st.stop()
 
+def verificar_y_reparar_hoja():
+    """Esta función es el DOCTOR. Revisa si los títulos existen. Si no, los crea."""
+    sheet = conectar_google()
+    
+    # 1. REVISAR PESTAÑA 'sims'
+    try:
+        ws = sheet.worksheet("sims")
+        # Leemos la primera fila
+        headers = [str(h).lower().strip() for h in ws.row_values(1)]
+        if "iccid" not in headers:
+            st.toast("⚠️ Reparando encabezados en hoja 'sims'...", icon="🔧")
+            # Si no está 'iccid', asumimos que la hoja está mal y reescribimos la fila 1
+            ws.insert_row(['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'], 1)
+    except:
+        # Si la hoja no existe, la creamos
+        ws = sheet.add_worksheet("sims", 1000, 20)
+        ws.append_row(['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
+
+    # 2. REVISAR PESTAÑA 'historial'
+    try:
+        ws_h = sheet.worksheet("historial")
+        headers_h = [str(h).lower().strip() for h in ws_h.row_values(1)]
+        if "iccid" not in headers_h:
+            ws_h.insert_row(['iccid', 'accion', 'detalle', 'usuario', 'fecha'], 1)
+    except:
+        ws_h = sheet.add_worksheet("historial", 1000, 10)
+        ws_h.append_row(['iccid', 'accion', 'detalle', 'usuario', 'fecha'])
+
+    # 3. REVISAR PESTAÑA 'usuarios'
+    try:
+        ws_u = sheet.worksheet("usuarios")
+        headers_u = [str(h).lower().strip() for h in ws_u.row_values(1)]
+        if "username" not in headers_u:
+            ws_u.insert_row(['username', 'password', 'rol'], 1)
+            # Creamos admin por defecto si reparamos la tabla
+            ws_u.append_row(['admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin'])
+    except:
+        ws_u = sheet.add_worksheet("usuarios", 1000, 5)
+        ws_u.append_row(['username', 'password', 'rol'])
+        ws_u.append_row(['admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin'])
+
 def leer_datos(pestaña):
     sheet = conectar_google()
     worksheet = sheet.worksheet(pestaña)
     data = worksheet.get_all_records()
+    # Si la hoja está vacía (solo encabezados), pandas a veces devuelve vacío.
+    # Forzamos un DataFrame con las columnas correctas si está vacío
+    if not data:
+        if pestaña == "sims":
+            return pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
+        elif pestaña == "usuarios":
+             return pd.DataFrame(columns=['username', 'password', 'rol'])
+    
     return pd.DataFrame(data)
 
 def escribir_fila(pestaña, fila_lista):
@@ -97,6 +146,12 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
 def registrar_sim(datos, usuario):
     # Verificamos duplicados
     df = leer_datos("sims")
+    
+    # PROTECCIÓN CONTRA CLAVES FALTANTES
+    if 'iccid' not in df.columns:
+        # Si llegamos aquí es porque la hoja en google está mal
+        return False 
+        
     df['iccid'] = df['iccid'].astype(str)
     if str(datos['iccid']) in df['iccid'].values:
         return False
@@ -113,12 +168,9 @@ def registrar_sim(datos, usuario):
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"SIM creada como {estado}", usuario, fecha])
     return True
 
-# Esta función ahora recibe un DF LIMPIO y LISTO
 def procesar_carga_masiva_final(df_limpio, usuario):
     correctos = 0
     errores = 0
-    
-    # Limpieza final de valores nulos y tipos
     df_limpio = df_limpio.fillna("")
     df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
 
@@ -137,7 +189,7 @@ def procesar_carga_masiva_final(df_limpio, usuario):
             'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
             'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
         }
-        
+        # Intentamos registrar. Si registrar_sim devuelve False (duplicado o error), sumamos error
         if registrar_sim(datos, usuario): 
             correctos += 1
         else: 
@@ -147,6 +199,8 @@ def procesar_carga_masiva_final(df_limpio, usuario):
 
 def login_user(username, password):
     df = leer_datos("usuarios")
+    if 'username' not in df.columns: return None # Protección extra
+    
     df['username'] = df['username'].astype(str)
     user_row = df[df['username'] == username]
     if not user_row.empty:
@@ -207,6 +261,11 @@ def crear_usuario(username, password, rol):
 # 4. INTERFAZ GRÁFICA (UI)
 # ==========================================
 def main():
+    # --- EJECUTAR EL DOCTOR AL INICIO ---
+    if 'db_checked' not in st.session_state:
+        verificar_y_reparar_hoja()
+        st.session_state.db_checked = True
+
     if 'usuario' not in st.session_state: st.session_state.usuario = None
     if 'rol' not in st.session_state: st.session_state.rol = None
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
@@ -242,12 +301,14 @@ def main():
     if choice == "Dashboard":
         st.title("📊 Tablero")
         df = leer_datos("sims")
-        if not df.empty:
+        if not df.empty and 'estado' in df.columns:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
+        else:
+            st.warning("Base de datos vacía o reparándose. Recarga la página.")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Gestión Inventario")
@@ -272,7 +333,7 @@ def main():
                         with st.spinner("Guardando..."):
                             if registrar_sim(d, st.session_state.usuario):
                                 st.success("Guardado"); st.session_state.form_id += 1; refrescar_pagina(2)
-                            else: st.error("Duplicado")
+                            else: st.error("Duplicado o Error en BD")
                     else: st.warning("Falta ICCID")
 
         with tab2:
@@ -284,61 +345,64 @@ def main():
             
             archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
             if archivo:
+                # SEPARACIÓN DE ERRORES: Leemos Excel aparte
+                df_check = None
                 try:
                     df_check = pd.read_excel(archivo)
-                    st.success("✅ Archivo leído. Por favor, selecciona qué columna corresponde a cada dato:")
-                    
-                    # --- MAPEO MANUAL DE COLUMNAS ---
-                    cols = list(df_check.columns)
-                    
-                    # Intentamos adivinar el índice por defecto si el nombre se parece
-                    def encontrar_idx(texto_buscar, lista_cols):
-                        texto_buscar = texto_buscar.lower()
-                        for i, col in enumerate(lista_cols):
-                            if texto_buscar in str(col).lower():
-                                return i
-                        return 0 # Si no encuentra, devuelve el primero
-
-                    c1, c2, c3 = st.columns(3)
-                    sel_iccid = c1.selectbox("Columna ICCID*", cols, index=encontrar_idx("iccid", cols))
-                    sel_linea = c2.selectbox("Columna Línea", cols, index=encontrar_idx("linea", cols))
-                    sel_cliente = c3.selectbox("Columna Cliente", cols, index=encontrar_idx("cliente", cols))
-                    
-                    c4, c5, c6 = st.columns(3)
-                    sel_placa = c4.selectbox("Columna Placa", cols, index=encontrar_idx("placa", cols))
-                    sel_imei = c5.selectbox("Columna IMEI", cols, index=encontrar_idx("imei", cols))
-                    sel_plan = c6.selectbox("Columna Plan", cols, index=encontrar_idx("plan", cols))
-
-                    c7, c8, c9 = st.columns(3)
-                    sel_pais = c7.selectbox("Columna País", cols, index=encontrar_idx("pais", cols))
-                    sel_cq = c8.selectbox("Costo Q", cols, index=encontrar_idx("costo q", cols))
-                    sel_cd = c9.selectbox("Costo $", cols, index=encontrar_idx("costo", cols))
-
-                    if st.button("Procesar Datos Mapeados"):
-                        # Construimos un DataFrame limpio y estandarizado
-                        df_final = pd.DataFrame()
-                        df_final['iccid'] = df_check[sel_iccid]
-                        df_final['numero_linea'] = df_check[sel_linea]
-                        df_final['cliente'] = df_check[sel_cliente]
-                        df_final['placa'] = df_check[sel_placa]
-                        df_final['imei'] = df_check[sel_imei]
-                        df_final['tipo_plan'] = df_check[sel_plan]
-                        df_final['pais'] = df_check[sel_pais]
-                        df_final['costo_q'] = df_check[sel_cq]
-                        df_final['costo_d'] = df_check[sel_cd]
-                        
-                        with st.spinner("Procesando..."):
-                            c, e = procesar_carga_masiva_final(df_final, st.session_state.usuario)
-                            st.success(f"✅ Finalizado: {c} guardados | {e} duplicados/errores")
-                            refrescar_pagina(5)
-
+                    st.success("✅ Archivo Excel leído correctamente.")
                 except Exception as ex:
-                    st.error(f"Error al leer Excel: {ex}")
+                    st.error(f"❌ Error leyendo el archivo Excel: {ex}")
+                
+                if df_check is not None:
+                    # Mapeo manual
+                    cols = list(df_check.columns)
+                    def f_idx(txt, lst):
+                        txt=txt.lower()
+                        for i,c in enumerate(lst):
+                            if txt in str(c).lower(): return i
+                        return 0
+                    
+                    st.write("Confirma las columnas:")
+                    c1,c2,c3 = st.columns(3)
+                    si = c1.selectbox("ICCID", cols, index=f_idx("iccid",cols))
+                    sl = c2.selectbox("Línea", cols, index=f_idx("linea",cols))
+                    sc = c3.selectbox("Cliente", cols, index=f_idx("cliente",cols))
+                    
+                    c4,c5,c6 = st.columns(3)
+                    sp = c4.selectbox("Placa", cols, index=f_idx("placa",cols))
+                    sim = c5.selectbox("IMEI", cols, index=f_idx("imei",cols))
+                    spl = c6.selectbox("Plan", cols, index=f_idx("plan",cols))
+                    
+                    c7,c8,c9 = st.columns(3)
+                    spa = c7.selectbox("País", cols, index=f_idx("pais",cols))
+                    scq = c8.selectbox("Costo Q", cols, index=f_idx("costo q",cols))
+                    scd = c9.selectbox("Costo $", cols, index=f_idx("costo",cols))
+
+                    if st.button("Procesar Datos"):
+                        # Construir DF limpio
+                        df_final = pd.DataFrame()
+                        df_final['iccid'] = df_check[si]
+                        df_final['numero_linea'] = df_check[sl]
+                        df_final['cliente'] = df_check[sc]
+                        df_final['placa'] = df_check[sp]
+                        df_final['imei'] = df_check[sim]
+                        df_final['tipo_plan'] = df_check[spl]
+                        df_final['pais'] = df_check[spa]
+                        df_final['costo_q'] = df_check[scq]
+                        df_final['costo_d'] = df_check[scd]
+                        
+                        with st.spinner("Subiendo a Google Sheets..."):
+                            try:
+                                c, e = procesar_carga_masiva_final(df_final, st.session_state.usuario)
+                                st.success(f"✅ Finalizado: {c} guardados | {e} duplicados")
+                                refrescar_pagina(5)
+                            except Exception as db_err:
+                                st.error(f"❌ Error guardando en Base de Datos: {db_err}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
         df = leer_datos("sims")
-        if not df.empty:
+        if not df.empty and 'iccid' in df.columns:
             df['iccid'] = df['iccid'].astype(str)
             df['disp'] = df['iccid'] + " | " + df['cliente'].astype(str)
             sel = st.selectbox("Buscar:", df['disp'].tolist(), index=None, placeholder="Escribe...")
@@ -367,7 +431,7 @@ def main():
     elif choice == "Traslados":
         st.subheader("🔄 Traslados")
         df = leer_datos("sims")
-        if not df.empty:
+        if not df.empty and 'iccid' in df.columns:
             df['iccid'] = df['iccid'].astype(str)
             dfo = df[~df['estado'].isin(['Retirada','Cancelada'])]
             dfd = df[df['estado']=='Botiquin']
@@ -385,7 +449,7 @@ def main():
     elif choice == "Cancelar/Gestionar":
         st.subheader("⚠️ Cancelar")
         df = leer_datos("sims")
-        if not df.empty:
+        if not df.empty and 'iccid' in df.columns:
             df['iccid'] = df['iccid'].astype(str)
             dfc = df[df['estado']!='Cancelada']
             dfc['disp'] = dfc['iccid'] + " | " + dfc['cliente'].astype(str)
