@@ -330,7 +330,7 @@ def cancelar_servicio(iccid, usuario, motivo):
     return False
 
 # ==============================================================================
-# 4. APLICACIÓN PRINCIPAL (UI)
+# 4. APLICACIÓN PRINCIPAL (UI) - ACTUALIZADA CON CONSULTA RÁPIDA
 # ==============================================================================
 
 def app_control_sim():
@@ -342,10 +342,12 @@ def app_control_sim():
     st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas_disponibles, index=0)
     st.sidebar.caption(f"Hora: {obtener_hora_actual()}")
     
-    # MENÚ DINÁMICO SEGÚN ROL
-    menu_ops = ["Dashboard", "Reportes"]
+    # MENÚ DINÁMICO (Agregamos "Consulta SIM" para ambos roles)
     if st.session_state.rol == "admin":
-        menu_ops = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
+        menu_ops = ["Dashboard", "🔍 Consulta SIM", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
+    else:
+        # Menú para usuario general
+        menu_ops = ["Dashboard", "🔍 Consulta SIM", "Reportes"]
     
     choice = st.sidebar.radio("Opciones:", menu_ops)
 
@@ -356,14 +358,12 @@ def app_control_sim():
         st.title("📊 Tablero de Control")
         df = leer_datos("sims")
         if not df.empty and 'estado' in df.columns:
-            # Tarjetas de Inventario (Para todos)
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Inventario", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
 
-            # Financiero (SOLO ADMIN)
             if st.session_state.rol == 'admin':
                 st.markdown("---")
                 st.subheader("💰 Facturación Mensual Estimada")
@@ -377,6 +377,70 @@ def app_control_sim():
                 k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
         else:
             st.info("Cargando datos...")
+
+    # --- NUEVA PANTALLA: CONSULTA SIM ---
+    elif choice == "🔍 Consulta SIM":
+        st.subheader("🔍 Buscador Rápido de SIM")
+        st.info("Ingresa el ICCID para verificar si la SIM es válida, si tiene línea o si ya fue desechada.")
+        
+        busqueda = st.text_input("Escribe el ICCID (o parte de él):", placeholder="Ej: 89502...")
+        
+        if busqueda:
+            df = leer_datos("sims")
+            if not df.empty:
+                # Convertimos a string para buscar
+                df['iccid'] = df['iccid'].astype(str)
+                
+                # Buscamos coincidencia exacta o parcial
+                resultado = df[df['iccid'].str.contains(busqueda, na=False)]
+                
+                if not resultado.empty:
+                    st.write(f"Se encontraron **{len(resultado)}** resultados:")
+                    
+                    for index, row in resultado.iterrows():
+                        estado = row['estado']
+                        iccid_found = row['iccid']
+                        linea = row['numero_linea']
+                        cliente = row['cliente']
+                        
+                        # LOGICA DE SEMÁFORO SEGÚN ESTADO
+                        with st.container(border=True):
+                            c_icon, c_info = st.columns([1, 5])
+                            
+                            if estado == "Retirada":
+                                with c_icon: st.error("🚫")
+                                with c_info:
+                                    st.error(f"**ICCID:** {iccid_found}")
+                                    st.write(f"**Estado:** {estado} (INUTILIZABLE)")
+                                    st.caption("Esta SIM ya fue procesada en un traslado y no puede volver a usarse.")
+                            
+                            elif estado == "Cancelada":
+                                with c_icon: st.error("❌")
+                                with c_info:
+                                    st.error(f"**ICCID:** {iccid_found}")
+                                    st.write(f"**Estado:** {estado} (Dada de baja)")
+                            
+                            elif estado == "Activa":
+                                with c_icon: st.success("✅")
+                                with c_info:
+                                    st.success(f"**ICCID:** {iccid_found}")
+                                    st.write(f"**Estado:** Activa y Funcionando")
+                                    st.write(f"📞 **Línea:** {linea}")
+                                    st.write(f"👤 **Cliente:** {cliente}")
+                                    
+                            elif estado == "Botiquin":
+                                with c_icon: st.warning("📦")
+                                with c_info:
+                                    st.warning(f"**ICCID:** {iccid_found}")
+                                    st.write("**Estado:** Botiquín (Disponible)")
+                                    st.caption("Esta SIM está lista para usarse, pero aún NO tiene línea ni cliente.")
+                            
+                            else:
+                                # Otro estado desconocido
+                                st.info(f"**ICCID:** {iccid_found} | Estado: {estado}")
+
+                else:
+                    st.warning("No se encontró ninguna SIM con ese número.")
 
     # --- PANTALLA REGISTRAR ---
     elif choice == "Registrar SIM":
@@ -523,109 +587,55 @@ def app_control_sim():
                         if cancelar_servicio(sel.split(" | ")[0], st.session_state.usuario, mot):
                             st.success("Listo"); refrescar_pagina(2)
 
-    # --- PANTALLA AUDITORÍA (MEJORADA) ---
+    # --- PANTALLA AUDITORÍA ---
     elif choice == "Auditoría":
         st.subheader("🕵️ Auditoría de Cambios")
         st.info("Filtra por usuario, tipo de acción o fecha.")
-        
         df_hist = leer_datos("historial")
-        
         if not df_hist.empty:
-            # 1. Asegurar formato de fecha para filtrado
-            try:
-                # Intentamos convertir la fecha (asumiendo formato string en sheet)
-                df_hist['Fecha_DT'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
-            except:
-                df_hist['Fecha_DT'] = pd.NaT
-
-            # 2. Preparar opciones de filtro (Para que NO salgan deshabilitados)
-            # Usamos dropna() para evitar opciones vacías
+            try: df_hist['Fecha_DT'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
+            except: df_hist['Fecha_DT'] = pd.NaT
             users_opt = sorted(df_hist['Usuario'].astype(str).unique().tolist())
             actions_opt = sorted(df_hist['Acción'].astype(str).unique().tolist())
-
-            # 3. Interfaz de Filtros
             c1, c2, c3 = st.columns(3)
-            
-            with c1:
-                sel_user = st.multiselect("Usuario", users_opt)
-            with c2:
-                sel_action = st.multiselect("Acción", actions_opt)
-            with c3:
-                # Filtro de fecha
-                fecha_filtro = st.date_input("Rango de Fecha", [])
-
-            # 4. Aplicar Filtros
+            with c1: sel_user = st.multiselect("Usuario", users_opt)
+            with c2: sel_action = st.multiselect("Acción", actions_opt)
+            with c3: fecha_filtro = st.date_input("Rango de Fecha", [])
             df_show = df_hist.copy()
-
-            # Filtro Usuario
-            if sel_user:
-                df_show = df_show[df_show['Usuario'].isin(sel_user)]
-            
-            # Filtro Acción
-            if sel_action:
-                df_show = df_show[df_show['Acción'].isin(sel_action)]
-            
-            # Filtro Fecha (Si se seleccionó un rango o un día)
+            if sel_user: df_show = df_show[df_show['Usuario'].isin(sel_user)]
+            if sel_action: df_show = df_show[df_show['Acción'].isin(sel_action)]
             if len(fecha_filtro) > 0:
                 start_date = fecha_filtro[0]
                 end_date = fecha_filtro[1] if len(fecha_filtro) > 1 else start_date
-                
-                # Filtramos usando la columna temporal datetime
-                df_show = df_show[
-                    (df_show['Fecha_DT'].dt.date >= start_date) & 
-                    (df_show['Fecha_DT'].dt.date <= end_date)
-                ]
-
-            # Limpieza final para mostrar (quitamos la columna auxiliar)
-            if 'Fecha_DT' in df_show.columns:
-                df_show = df_show.drop(columns=['Fecha_DT'])
-            
-            # Ordenar descendente (más nuevo primero) si hay fecha
-            if 'Fecha' in df_show.columns:
-                 df_show = df_show.sort_values(by='Fecha', ascending=False)
-
+                df_show = df_show[(df_show['Fecha_DT'].dt.date >= start_date) & (df_show['Fecha_DT'].dt.date <= end_date)]
+            if 'Fecha_DT' in df_show.columns: df_show = df_show.drop(columns=['Fecha_DT'])
+            if 'Fecha' in df_show.columns: df_show = df_show.sort_values(by='Fecha', ascending=False)
             st.dataframe(df_show, use_container_width=True)
-        else:
-            st.warning("No hay registros de auditoría disponibles.")
+        else: st.warning("No hay registros de auditoría disponibles.")
 
-    # --- PANTALLA REPORTES (BOTÓN ARRIBA) ---
+    # --- PANTALLA REPORTES ---
     elif choice == "Reportes":
         st.subheader("📑 Reportes")
         df = leer_datos("sims")
         if not df.empty:
-            # Filtros laterales
             try:
                 p = st.sidebar.multiselect("Filtrar País", df['pais'].unique())
                 if p: df = df[df['pais'].isin(p)]
             except: pass
             
-            # Preparar DataFrame de Exportación
             df_export = df.copy()
-            
-            # Seguridad: Eliminar costos si no es admin
             if st.session_state.rol != 'admin':
                 columnas_prohibidas = ['costo_q', 'costo_d']
                 df_export = df_export.drop(columns=[c for c in columnas_prohibidas if c in df_export.columns], errors='ignore')
             else:
-                # Formatear moneda solo para visualización/exportación si es admin
                 try:
                     df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
                     df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
                 except: pass
 
-            # --- CAMBIO: Botón de descarga AQUÍ ARRIBA ---
             buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_export.to_excel(writer, index=False)
-            
-            st.download_button(
-                label="📥 Descargar Excel con Formato",
-                data=buffer.getvalue(),
-                file_name="reporte_sims.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            # ---------------------------------------------
-
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
+            st.download_button(label="📥 Descargar Excel con Formato", data=buffer.getvalue(), file_name="reporte_sims.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             st.dataframe(df_export)
 
 # ==============================================================================
@@ -760,3 +770,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
