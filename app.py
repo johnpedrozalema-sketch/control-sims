@@ -7,6 +7,7 @@ import time
 import hashlib
 import io
 import json
+import pytz # IMPORTANTE: Librería para zonas horarias
 
 # ==========================================
 # 1. CONFIGURACIÓN
@@ -28,6 +29,20 @@ def check_hashes(password, hashed_text):
 def refrescar_pagina(segundos=3):
     time.sleep(segundos)
     st.rerun()
+
+# --- FUNCIÓN DE TIEMPO INTELIGENTE ---
+def obtener_hora_actual():
+    """Devuelve la fecha y hora ajustada a la zona horaria seleccionada por el usuario"""
+    # Si el usuario seleccionó una zona en el sidebar, la usamos. Si no, default Guatemala.
+    zona_seleccionada = st.session_state.get('zona_horaria', 'America/Guatemala')
+    
+    try:
+        tz = pytz.timezone(zona_seleccionada)
+        fecha_ajustada = datetime.now(tz)
+        return fecha_ajustada.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        # Si falla, devolvemos hora normal
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ==========================================
 # 2. CONEXIÓN Y CACHÉ
@@ -76,12 +91,10 @@ def escribir_fila(pestaña, fila_lista):
     limpiar_cache()
     return True
 
-# NUEVA FUNCIÓN: Escribir muchas filas de un solo golpe
 def escribir_lote(pestaña, lista_de_filas):
     if not lista_de_filas: return True
     sheet = conectar_google()
     worksheet = sheet.worksheet(pestaña)
-    # append_rows es la clave: envía todo junto
     worksheet.append_rows(lista_de_filas)
     return True
 
@@ -122,11 +135,10 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO OPTIMIZADA
+# 3. LÓGICA DE NEGOCIO (CON FECHA LOCAL)
 # ==========================================
 
 def registrar_sim(datos, usuario):
-    # Registro individual (se mantiene igual)
     df = leer_datos("sims")
     if 'iccid' in df.columns:
         df['iccid'] = df['iccid'].astype(str)
@@ -136,7 +148,9 @@ def registrar_sim(datos, usuario):
     linea = str(datos['numero_linea']) if datos['numero_linea'] and str(datos['numero_linea']).lower() != 'nan' else ""
     cliente = str(datos['cliente']) if datos['cliente'] and str(datos['cliente']).lower() != 'nan' else ""
     estado = "Activa" if linea and cliente else "Botiquin"
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # USAMOS LA HORA LOCAL
+    fecha = obtener_hora_actual()
 
     fila = [str(datos['iccid']), linea, cliente, str(datos['placa']), str(datos['imei']),
             str(datos['tipo_plan']), str(datos['pais']), datos['costo_q'], datos['costo_d'],
@@ -145,69 +159,52 @@ def registrar_sim(datos, usuario):
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"SIM creada como {estado}", usuario, fecha])
     return True
 
-# --- FUNCIÓN REESCRITA PARA VELOCIDAD ---
 def procesar_carga_masiva_turbo(df_limpio, usuario):
     df_limpio = df_limpio.fillna("")
     df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
 
-    # 1. Leemos lo que ya existe para no duplicar
     df_db = leer_datos("sims")
     iccids_existentes = set()
     if 'iccid' in df_db.columns:
         iccids_existentes = set(df_db['iccid'].astype(str).tolist())
 
-    # 2. Preparamos las listas (Las carretillas)
     nuevas_filas_sims = []
     nuevas_filas_historial = []
     
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # USAMOS LA HORA LOCAL PARA EL LOTE
+    fecha_hoy = obtener_hora_actual()
     correctos = 0
     duplicados = 0
 
     for index, row in df_limpio.iterrows():
         iccid_val = str(row['iccid']).strip()
-        
-        # Validaciones básicas
         if not iccid_val or iccid_val.lower() == 'nan': continue
         if iccid_val in iccids_existentes:
             duplicados += 1
-            continue # Saltamos duplicados
+            continue
 
-        # Lógica de estado
         n_linea = str(row['numero_linea']).replace(".0", "")
         n_cliente = str(row['cliente'])
         estado = "Activa" if n_linea and n_cliente and n_linea.lower()!='nan' else "Botiquin"
 
-        # Armamos la fila de SIMs
         fila_sim = [
-            iccid_val, 
-            n_linea, 
-            n_cliente,
-            str(row['placa']), 
-            str(row['imei']), 
-            str(row['tipo_plan']), 
-            str(row['pais']),
+            iccid_val, n_linea, n_cliente, str(row['placa']), str(row['imei']), 
+            str(row['tipo_plan']), str(row['pais']),
             row['costo_q'] if row['costo_q'] != "" else 0.0,
             row['costo_d'] if row['costo_d'] != "" else 0.0,
-            estado,
-            fecha_hoy
+            estado, fecha_hoy
         ]
         
-        # Armamos la fila de Historial
         fila_hist = [iccid_val, "Creacion Masiva", f"Carga Excel. Estado: {estado}", usuario, fecha_hoy]
-
         nuevas_filas_sims.append(fila_sim)
         nuevas_filas_historial.append(fila_hist)
-        
-        # Agregamos al set temporal para evitar duplicados dentro del mismo excel
         iccids_existentes.add(iccid_val)
         correctos += 1
 
-    # 3. ENVIAMOS TODO DE UN SOLO GOLPE (Batch)
     if nuevas_filas_sims:
         escribir_lote("sims", nuevas_filas_sims)
         escribir_lote("historial", nuevas_filas_historial)
-        limpiar_cache() # Limpiamos memoria para ver los cambios
+        limpiar_cache()
         
     return correctos, duplicados
 
@@ -228,7 +225,8 @@ def actualizar_datos_sim(iccid, datos, usuario):
     datos_full = datos.copy()
     datos_full['estado'] = nuevo_estado
     if actualizar_sim_completa(iccid, datos_full):
-        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # HORA LOCAL
+        fecha = obtener_hora_actual()
         escribir_fila("historial", [iccid, "Actualizacion", f"Estado: {nuevo_estado}", usuario, fecha])
         return True
     return False
@@ -251,14 +249,17 @@ def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
     actualizar_sim_completa(iccid_nuevo, datos_new)
     actualizar_celda_sim(iccid_antiguo, "estado", "Retirada")
     actualizar_celda_sim(iccid_antiguo, "numero_linea", "SIM RETIRADA")
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # HORA LOCAL
+    fecha = obtener_hora_actual()
     escribir_fila("historial", [iccid_nuevo, "Traslado Entrada", f"De {iccid_antiguo}", usuario, fecha])
     escribir_fila("historial", [iccid_antiguo, "Traslado Salida", f"A {iccid_nuevo}", usuario, fecha])
     return True, "Traslado Exitoso"
 
 def cancelar_servicio(iccid, usuario, motivo):
     if actualizar_celda_sim(iccid, "estado", "Cancelada"):
-        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # HORA LOCAL
+        fecha = obtener_hora_actual()
         escribir_fila("historial", [iccid, "Cancelacion", f"Motivo: {motivo}", usuario, fecha])
         return True
     return False
@@ -296,6 +297,27 @@ def main():
         return
 
     st.sidebar.title(f"👤 {st.session_state.usuario}")
+    
+    # --- SELECTOR DE ZONA HORARIA ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🕒 Zona Horaria")
+    # Puedes agregar más zonas si lo necesitas
+    zonas_disponibles = [
+        "America/Guatemala", 
+        "America/Bogota", 
+        "America/Mexico_City", 
+        "America/El_Salvador",
+        "America/Costa_Rica",
+        "UTC"
+    ]
+    # Guardamos la selección en session_state para que la función la lea
+    st.session_state.zona_horaria = st.sidebar.selectbox("Tu Ubicación:", zonas_disponibles, index=0)
+    
+    # Mostrar la hora actual para confirmar
+    hora_actual = obtener_hora_actual()
+    st.sidebar.caption(f"Hora detectada: {hora_actual}")
+    st.sidebar.markdown("---")
+
     menu = ["Dashboard", "Reportes", "Salir"]
     if st.session_state.rol == "admin":
         menu = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Usuarios", "Reportes", "Salir"]
@@ -394,11 +416,10 @@ def main():
                         df_final['costo_q'] = df_check[scq]
                         df_final['costo_d'] = df_check[scd]
                         
-                        with st.spinner("Enviando bloque de datos a Google... (Turbo 🚀)"):
+                        with st.spinner("Enviando a Google..."):
                             try:
-                                # AQUI LLAMAMOS A LA VERSIÓN TURBO
                                 c, e = procesar_carga_masiva_turbo(df_final, st.session_state.usuario)
-                                st.success(f"✅ Éxito total: {c} nuevas SIMs guardadas | {e} duplicados ignorados")
+                                st.success(f"✅ Éxito: {c} nuevas | {e} duplicados")
                                 refrescar_pagina(5)
                             except Exception as db_err:
                                 st.error(f"Error: {db_err}")
