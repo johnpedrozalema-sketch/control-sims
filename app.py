@@ -31,7 +31,6 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 def obtener_hora_actual():
-    """Devuelve la fecha y hora ajustada a la zona horaria seleccionada"""
     zona_seleccionada = st.session_state.get('zona_horaria', 'America/Guatemala')
     try:
         tz = pytz.timezone(zona_seleccionada)
@@ -75,7 +74,6 @@ def leer_datos(pestaña):
         elif pestaña == "usuarios":
              return pd.DataFrame(columns=['username', 'password', 'rol'])
     
-    # Convertimos a DataFrame
     df = pd.DataFrame(data)
     return df
 
@@ -133,17 +131,31 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO
+# 3. LÓGICA DE NEGOCIO Y FINANCIERA
 # ==========================================
 
-# --- FUNCIÓN DE LIMPIEZA FINANCIERA ---
+# --- CORRECCIÓN CRÍTICA DE MONEDA ---
 def limpiar_moneda(valor):
-    """Recibe texto o numero y devuelve float puro"""
+    """
+    Convierte inteligentemente el texto a número.
+    Maneja: '50,00' -> 50.0  |  '1,500.00' -> 1500.0  |  'Q 100' -> 100.0
+    """
     if isinstance(valor, (int, float)):
         return float(valor)
-    valor = str(valor)
-    # Quitamos simbolos de moneda y comas para poder sumar
-    valor = valor.replace("Q", "").replace("$", "").replace(",", "").strip()
+    
+    valor = str(valor).strip()
+    # 1. Quitamos símbolos de moneda
+    valor = valor.replace("Q", "").replace("$", "")
+    
+    # 2. Lógica de comas y puntos
+    if "," in valor and "." in valor:
+        # Caso: 1,500.50 (Tiene ambos) -> La coma es miles, el punto es decimal
+        valor = valor.replace(",", "")
+    elif "," in valor:
+        # Caso: 50,00 (Solo tiene coma) -> La coma es decimal
+        valor = valor.replace(",", ".")
+    
+    # 3. Convertir
     try:
         return float(valor)
     except:
@@ -194,14 +206,14 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
         n_cliente = str(row['cliente'])
         estado = "Activa" if n_linea and n_cliente and n_linea.lower()!='nan' else "Botiquin"
         
-        # Limpiamos costos antes de subir para que suban como números puros
+        # --- APLICAMOS LA CORRECCIÓN AQUÍ TAMBIÉN ---
         cq = limpiar_moneda(row['costo_q'])
         cd = limpiar_moneda(row['costo_d'])
 
         fila_sim = [
             iccid_val, n_linea, n_cliente, str(row['placa']), str(row['imei']), 
             str(row['tipo_plan']), str(row['pais']),
-            cq, cd, # Subimos float puro
+            cq, cd, # Guardamos el número limpio
             estado, fecha_hoy
         ]
         
@@ -336,14 +348,11 @@ def main():
             st.markdown("---")
             st.subheader("💰 Facturación Mensual Estimada (Solo Activas)")
             
-            # --- LIMPIEZA INTERNA PARA CÁLCULOS ---
-            # Aquí aplicamos la función limpiar_moneda a CADA celda de costos
+            # Aplicamos la limpieza a las columnas para el cálculo
             df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
             df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
             
-            # Filtramos solo las ACTIVAS
             df_activas = df[df['estado'] == 'Activa']
-            
             total_q = df_activas['costo_q_calc'].sum()
             total_d = df_activas['costo_d_calc'].sum()
             
@@ -460,7 +469,6 @@ def main():
                     except: idx = 0
                     npa = c2.selectbox("País", paises, index=idx)
                     
-                    # Limpieza para mostrar en el formulario
                     v_q = limpiar_moneda(cur['costo_q'])
                     v_d = limpiar_moneda(cur['costo_d'])
                     
@@ -529,14 +537,12 @@ def main():
                 if p: df = df[df['pais'].isin(p)]
             except: pass
             
-            # --- FORMATEO BONITO PARA EXPORTAR ---
-            # Creamos una copia para no dañar los datos originales
+            # Formato bonito para Excel
             df_export = df.copy()
-            # Aplicamos formato "Q 100.00" solo si es número
             try:
                 df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
                 df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
-            except: pass # Si falla, deja los datos como están
+            except: pass
 
             st.dataframe(df_export)
             buffer = io.BytesIO()
