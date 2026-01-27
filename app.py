@@ -311,25 +311,37 @@ def main():
                     else: st.warning("Falta ICCID")
         with tab2:
             st.markdown("### Carga Masiva")
+            
+            # Botón de plantilla (este lo dejas igual)
             df_template = pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d'])
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_template.to_excel(writer, index=False)
             st.download_button("📥 Plantilla", data=buffer.getvalue(), file_name="plantilla.xlsx")
-            archivo = st.file_uploader("Suelte archivo", type=["xlsx", "xls"])
-            if archivo and st.button("Procesar"):
+            
+            # --- AQUÍ EMPIEZA EL CAMBIO ---
+            archivo = st.file_uploader("Suelte su archivo", type=["xlsx", "xls"])
+            
+            if archivo is not None:
+                # 1. Leemos el archivo SIN condiciones (Lectura ciega)
                 try:
                     df_upload = pd.read_excel(archivo)
-                    with st.spinner("Analizando archivo..."):
-                        c, e, msg = procesar_carga_masiva(df_upload, st.session_state.usuario)
                     
-                    if "Error" in msg:
-                        st.error(msg)
-                    else:
-                        st.success(f"✅ Guardados: {c} | Errores/Duplicados: {e}")
-                        refrescar_pagina(3)
+                    # 2. EL CHISMOSO: Mostramos en pantalla qué leyó Python
+                    st.info(f"El archivo se leyó. Columnas detectadas: {list(df_upload.columns)}")
+                    
+                    # 3. Botón para procesar
+                    if st.button("Procesar"):
+                        with st.spinner("Procesando..."):
+                            c, e, msg = procesar_carga_masiva(df_upload, st.session_state.usuario)
+                        
+                        if "Error" in msg:
+                            st.error(msg)
+                        else:
+                            st.success(f"✅ Guardados: {c} | Errores: {e}")
+                            refrescar_pagina(5)
+                            
                 except Exception as ex:
-                    st.error(f"Error crítico: {ex}")
-
+                    st.error(f"Error al leer el Excel: {ex}")
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
         df = leer_datos("sims")
@@ -426,4 +438,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
