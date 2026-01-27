@@ -91,42 +91,11 @@ def actualizar_celda_sim(iccid, columna_nombre, nuevo_valor):
         return False
 
 # ==========================================
-# 3. LÓGICA DE NEGOCIO Y "EL RASTREADOR"
+# 3. LÓGICA DE NEGOCIO
 # ==========================================
 
-def rastrear_encabezados(df):
-    """
-    Busca en las primeras 10 filas dónde diablos está la palabra 'iccid'.
-    Si la encuentra, recorta el DataFrame para que empiece desde ahí.
-    """
-    # 1. Limpiamos las columnas actuales por si acaso
-    df.columns = [str(c).lower().strip() for c in df.columns]
-    
-    # Si ya está en la fila 0, perfecto.
-    if 'iccid' in df.columns:
-        return df
-
-    # Si no, buscamos fila por fila
-    for i in range(10): # Busca en las primeras 10 filas
-        if i >= len(df): break
-        
-        # Convertimos la fila a texto y minúsculas para buscar
-        fila = df.iloc[i].astype(str).str.lower().str.strip().tolist()
-        
-        if 'iccid' in fila:
-            # ¡ENCONTRADO! Esta fila 'i' es el verdadero encabezado
-            st.toast(f"Encabezados encontrados en la fila {i+1}", icon="🕵️")
-            
-            # Renombramos las columnas con los valores de esta fila
-            df.columns = df.iloc[i].astype(str).str.lower().str.strip()
-            
-            # Cortamos el dataframe para quedarnos solo con lo que está debajo
-            df = df[i+1:].reset_index(drop=True)
-            return df
-            
-    return df # Si no lo encuentra, devuelve el original (fallará luego, pero lo intentamos)
-
 def registrar_sim(datos, usuario):
+    # Verificamos duplicados
     df = leer_datos("sims")
     df['iccid'] = df['iccid'].astype(str)
     if str(datos['iccid']) in df['iccid'].values:
@@ -144,37 +113,29 @@ def registrar_sim(datos, usuario):
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"SIM creada como {estado}", usuario, fecha])
     return True
 
-def procesar_carga_masiva_segura(df, usuario):
+# Esta función ahora recibe un DF LIMPIO y LISTO
+def procesar_carga_masiva_final(df_limpio, usuario):
     correctos = 0
     errores = 0
     
-    # PASO CRÍTICO: Rastrear dónde están los títulos
-    df = rastrear_encabezados(df)
-    
-    # Validación final
-    if 'iccid' not in df.columns:
-        cols_encontradas = ", ".join(list(df.columns))
-        return 0, 0, f"⚠️ ERROR FATAL: Ni siquiera buscando en las primeras 10 filas encontré una celda que diga 'iccid'. \nLo que veo es: [{cols_encontradas}]. \nPor favor, descarga la plantilla de nuevo."
+    # Limpieza final de valores nulos y tipos
+    df_limpio = df_limpio.fillna("")
+    df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
 
-    # Limpieza
-    df = df.fillna("")
-    df['iccid'] = df['iccid'].astype(str).str.replace(".0", "", regex=False)
-
-    for index, row in df.iterrows():
+    for index, row in df_limpio.iterrows():
         iccid_val = str(row['iccid']).strip()
-        if not iccid_val or iccid_val.lower() == 'nan' or iccid_val.lower() == 'iccid': # Saltamos si se repite el título
-            continue
+        if not iccid_val or iccid_val.lower() == 'nan': continue
 
         datos = {
             'iccid': iccid_val, 
-            'numero_linea': str(row.get('numero_linea', '')).replace(".0", ""), 
-            'cliente': str(row.get('cliente', '')),
-            'placa': str(row.get('placa', '')), 
-            'imei': str(row.get('imei', '')), 
-            'tipo_plan': str(row.get('tipo_plan', '')), 
-            'pais': str(row.get('pais', '')),
-            'costo_q': row.get('costo_q', 0.0) if row.get('costo_q', "") != "" else 0.0,
-            'costo_d': row.get('costo_d', 0.0) if row.get('costo_d', "") != "" else 0.0
+            'numero_linea': str(row['numero_linea']).replace(".0", ""), 
+            'cliente': str(row['cliente']),
+            'placa': str(row['placa']), 
+            'imei': str(row['imei']), 
+            'tipo_plan': str(row['tipo_plan']), 
+            'pais': str(row['pais']),
+            'costo_q': row['costo_q'] if row['costo_q'] != "" else 0.0,
+            'costo_d': row['costo_d'] if row['costo_d'] != "" else 0.0
         }
         
         if registrar_sim(datos, usuario): 
@@ -182,7 +143,7 @@ def procesar_carga_masiva_segura(df, usuario):
         else: 
             errores += 1
             
-    return correctos, errores, "Proceso finalizado"
+    return correctos, errores
 
 def login_user(username, password):
     df = leer_datos("usuarios")
@@ -199,7 +160,6 @@ def actualizar_datos_sim(iccid, datos, usuario):
     nuevo_estado = "Activa" if linea and cliente else "Botiquin"
     datos_full = datos.copy()
     datos_full['estado'] = nuevo_estado
-    
     if actualizar_sim_completa(iccid, datos_full):
         fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         escribir_fila("historial", [iccid, "Actualizacion", f"Estado: {nuevo_estado}", usuario, fecha])
@@ -209,14 +169,11 @@ def actualizar_datos_sim(iccid, datos, usuario):
 def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
     df = leer_datos("sims")
     df['iccid'] = df['iccid'].astype(str)
-    
     row_old = df[df['iccid'] == str(iccid_antiguo)]
     if row_old.empty: return False, "ICCID Viejo no existe"
-    
     row_new = df[df['iccid'] == str(iccid_nuevo)]
     if row_new.empty: return False, "ICCID Nuevo no existe"
     if row_new.iloc[0]['estado'] != 'Botiquin': return False, "Nueva SIM no es Botiquín"
-    
     datos_old = row_old.iloc[0]
     datos_new = {
         'numero_linea': datos_old['numero_linea'], 'cliente': datos_old['cliente'],
@@ -227,7 +184,6 @@ def traslado_sim(iccid_antiguo, iccid_nuevo, usuario):
     actualizar_sim_completa(iccid_nuevo, datos_new)
     actualizar_celda_sim(iccid_antiguo, "estado", "Retirada")
     actualizar_celda_sim(iccid_antiguo, "numero_linea", "SIM RETIRADA")
-    
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     escribir_fila("historial", [iccid_nuevo, "Traslado Entrada", f"De {iccid_antiguo}", usuario, fecha])
     escribir_fila("historial", [iccid_antiguo, "Traslado Salida", f"A {iccid_nuevo}", usuario, fecha])
@@ -273,7 +229,6 @@ def main():
         return
 
     st.sidebar.title(f"👤 {st.session_state.usuario}")
-    
     menu = ["Dashboard", "Reportes", "Salir"]
     if st.session_state.rol == "admin":
         menu = ["Dashboard", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Usuarios", "Reportes", "Salir"]
@@ -311,7 +266,6 @@ def main():
                 pais = c1.selectbox("País", ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"], key=f"pa_{kf}")
                 cq = c2.number_input("Costo Q", key=f"cq_{kf}")
                 cd = c1.number_input("Costo $", key=f"cd_{kf}")
-                
                 if st.form_submit_button("Guardar"):
                     if iccid:
                         d = {'iccid': iccid, 'numero_linea': linea, 'cliente': cli, 'placa': pla, 'imei': ime, 'tipo_plan': plan, 'pais': pais, 'costo_q': cq, 'costo_d': cd}
@@ -331,25 +285,55 @@ def main():
             archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
             if archivo:
                 try:
-                    # LEEMOS TODO TAL CUAL VIENE
                     df_check = pd.read_excel(archivo)
-                    st.info("🔎 Analizando archivo...")
+                    st.success("✅ Archivo leído. Por favor, selecciona qué columna corresponde a cada dato:")
                     
-                    # MOSTRAR LO QUE VE EL PROGRAMA (Diagnóstico visual)
-                    with st.expander("Ver contenido del archivo (Clic aquí si hay error)"):
-                        st.dataframe(df_check.head())
+                    # --- MAPEO MANUAL DE COLUMNAS ---
+                    cols = list(df_check.columns)
+                    
+                    # Intentamos adivinar el índice por defecto si el nombre se parece
+                    def encontrar_idx(texto_buscar, lista_cols):
+                        texto_buscar = texto_buscar.lower()
+                        for i, col in enumerate(lista_cols):
+                            if texto_buscar in str(col).lower():
+                                return i
+                        return 0 # Si no encuentra, devuelve el primero
 
-                    if st.button("Procesar Archivo"):
-                        with st.spinner("Buscando encabezados y procesando..."):
-                            c, e, msg = procesar_carga_masiva_segura(df_check, st.session_state.usuario)
+                    c1, c2, c3 = st.columns(3)
+                    sel_iccid = c1.selectbox("Columna ICCID*", cols, index=encontrar_idx("iccid", cols))
+                    sel_linea = c2.selectbox("Columna Línea", cols, index=encontrar_idx("linea", cols))
+                    sel_cliente = c3.selectbox("Columna Cliente", cols, index=encontrar_idx("cliente", cols))
+                    
+                    c4, c5, c6 = st.columns(3)
+                    sel_placa = c4.selectbox("Columna Placa", cols, index=encontrar_idx("placa", cols))
+                    sel_imei = c5.selectbox("Columna IMEI", cols, index=encontrar_idx("imei", cols))
+                    sel_plan = c6.selectbox("Columna Plan", cols, index=encontrar_idx("plan", cols))
+
+                    c7, c8, c9 = st.columns(3)
+                    sel_pais = c7.selectbox("Columna País", cols, index=encontrar_idx("pais", cols))
+                    sel_cq = c8.selectbox("Costo Q", cols, index=encontrar_idx("costo q", cols))
+                    sel_cd = c9.selectbox("Costo $", cols, index=encontrar_idx("costo", cols))
+
+                    if st.button("Procesar Datos Mapeados"):
+                        # Construimos un DataFrame limpio y estandarizado
+                        df_final = pd.DataFrame()
+                        df_final['iccid'] = df_check[sel_iccid]
+                        df_final['numero_linea'] = df_check[sel_linea]
+                        df_final['cliente'] = df_check[sel_cliente]
+                        df_final['placa'] = df_check[sel_placa]
+                        df_final['imei'] = df_check[sel_imei]
+                        df_final['tipo_plan'] = df_check[sel_plan]
+                        df_final['pais'] = df_check[sel_pais]
+                        df_final['costo_q'] = df_check[sel_cq]
+                        df_final['costo_d'] = df_check[sel_cd]
                         
-                        if "ERROR" in msg:
-                            st.error(msg)
-                        else:
-                            st.success(f"✅ Éxito: {c} guardados | {e} duplicados/errores")
-                            refrescar_pagina(4)
+                        with st.spinner("Procesando..."):
+                            c, e = procesar_carga_masiva_final(df_final, st.session_state.usuario)
+                            st.success(f"✅ Finalizado: {c} guardados | {e} duplicados/errores")
+                            refrescar_pagina(5)
+
                 except Exception as ex:
-                    st.error(f"Error crítico al leer Excel: {ex}")
+                    st.error(f"Error al leer Excel: {ex}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Editar")
@@ -368,14 +352,12 @@ def main():
                     np = c1.text_input("Placa", value=cur['placa'])
                     ni = c2.text_input("IMEI", value=cur['imei'])
                     npl = c1.text_input("Plan", value=cur['tipo_plan'])
-                    
                     paises = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
                     try: idx = paises.index(cur['pais'])
                     except: idx = 0
                     npa = c2.selectbox("País", paises, index=idx)
                     ncq = c1.number_input("Costo Q", value=float(cur['costo_q']) if cur['costo_q'] else 0.0)
                     ncd = c2.number_input("Costo $", value=float(cur['costo_d']) if cur['costo_d'] else 0.0)
-                    
                     if st.form_submit_button("Actualizar"):
                         d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': ni, 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
                         with st.spinner("Actualizando..."):
@@ -390,11 +372,9 @@ def main():
             dfo = df[~df['estado'].isin(['Retirada','Cancelada'])]
             dfd = df[df['estado']=='Botiquin']
             dfo['disp'] = dfo['iccid'] + " (" + dfo['numero_linea'].astype(str) + ")"
-            
             c1, c2 = st.columns(2)
             orig = c1.selectbox("Vieja", dfo['disp'].tolist(), index=None, placeholder="Buscar...")
             dest = c2.selectbox("Nueva", dfd['iccid'].tolist(), index=None, placeholder="Buscar...")
-            
             if orig and dest:
                 if st.button("Trasladar"):
                     with st.spinner("Procesando..."):
