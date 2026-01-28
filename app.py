@@ -330,7 +330,7 @@ def cancelar_servicio(iccid, usuario, motivo):
     return False
 
 # ==============================================================================
-# 4. APLICACIÓN PRINCIPAL (UI) - CON BUSCADOR PREDICTIVO ÁGIL
+# 4. APLICACIÓN PRINCIPAL (UI) - CON FICHA TÉCNICA VISUAL
 # ==============================================================================
 
 def app_control_sim():
@@ -377,19 +377,16 @@ def app_control_sim():
         else:
             st.info("Cargando datos...")
 
-    # --- PANTALLA CONSULTA SIM (MEJORADA - TIPO GOOGLE) ---
+    # --- PANTALLA CONSULTA SIM (DISEÑO MEJORADO) ---
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador Inteligente")
-        st.caption("Escribe para filtrar. Selecciona una SIM para ver su diagnóstico inmediato.")
+        st.caption("Escribe para filtrar. Selecciona una SIM para ver su ficha técnica.")
         
         df = leer_datos("sims")
         if not df.empty:
-            # Preparamos los datos para el buscador (ICCID + Cliente para dar contexto)
             df['iccid'] = df['iccid'].astype(str)
-            # Creamos una columna "etiqueta" que muestra info mientras buscas
             df['busqueda_visual'] = df['iccid'] + " | " + df['cliente'].astype(str) + " (" + df['estado'] + ")"
             
-            # EL BUSCADOR AGIL (Selectbox con búsqueda)
             seleccion = st.selectbox(
                 "Buscar SIM por ICCID o Cliente:",
                 options=df['busqueda_visual'].tolist(),
@@ -400,43 +397,60 @@ def app_control_sim():
             st.markdown("---")
 
             if seleccion:
-                # Extraemos el ICCID de la selección
                 iccid_seleccionado = seleccion.split(" | ")[0]
-                
-                # Buscamos los datos completos
                 fila = df[df['iccid'] == iccid_seleccionado].iloc[0]
                 estado = fila['estado']
                 
-                # --- DISEÑO DE RESPUESTA VISUAL ---
-                col_estado, col_significado = st.columns([1, 4])
+                # --- ENCABEZADO CON SEMÁFORO ---
+                col_icon, col_msg = st.columns([1, 6])
+                with col_icon:
+                    if estado == "Activa": st.header("✅")
+                    elif estado == "Botiquin": st.header("📦")
+                    elif estado == "Retirada": st.header("🚫")
+                    elif estado == "Cancelada": st.header("❌")
+                    else: st.header("ℹ️")
                 
-                with col_estado:
-                    # Semáforo Visual Grande
-                    if estado == "Activa":
-                        st.success(f"✅ {estado}")
+                with col_msg:
+                    st.subheader(f"Diagnóstico: {estado}")
+                    if estado == "Retirada":
+                        st.error("Esta tarjeta SIM NO puede volver a usarse.")
                     elif estado == "Botiquin":
-                        st.warning(f"📦 {estado}")
-                    elif estado == "Retirada":
-                        st.error(f"🚫 {estado}")
-                    elif estado == "Cancelada":
-                        st.error(f"❌ {estado}")
-                    else:
-                        st.info(f"ℹ️ {estado}")
-
-                with col_significado:
-                    # Significado al lado
-                    if estado == "Activa":
-                        st.markdown(f"**Funcionando Correctamente** | Cliente: **{fila['cliente']}** | Línea: **{fila['numero_linea']}**")
-                    elif estado == "Botiquin":
-                        st.markdown("**Disponible para usar** | Sin línea ni cliente asignado.")
-                    elif estado == "Retirada":
-                        st.markdown("**INSERVIBLE** | Esta tarjeta ya fue usada en un traslado. Desechar.")
-                    elif estado == "Cancelada":
-                        st.markdown("**Dada de Baja** | Servicio cancelado administrativamente.")
-
-                # Detalles técnicos abajo (opcional, expandible)
-                with st.expander("Ver detalles técnicos completos"):
-                    st.json(fila.to_dict())
+                        st.warning("Lista para asignar. Aún sin línea.")
+                
+                # --- FICHA TÉCNICA AGRADABLE (GRID 3 COLUMNAS) ---
+                st.markdown("### 📋 Detalles Técnicos")
+                
+                with st.container(border=True):
+                    # Fila 1
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.caption("🆔 ICCID")
+                        st.markdown(f"**{fila['iccid']}**")
+                    with c2:
+                        st.caption("📞 Número de Línea")
+                        val_linea = fila['numero_linea'] if str(fila['numero_linea']) != "" else "---"
+                        st.markdown(f"**{val_linea}**")
+                    with c3:
+                        st.caption("🌍 País")
+                        st.markdown(f"**{fila['pais']}**")
+                    
+                    st.divider() # Línea separadora elegante
+                    
+                    # Fila 2
+                    c4, c5, c6 = st.columns(3)
+                    with c4:
+                        st.caption("🚦 Estado Actual")
+                        # Coloreamos el texto del estado
+                        color = "green" if estado == "Activa" else "orange" if estado == "Botiquin" else "red"
+                        st.markdown(f":{color}[**{estado}**]")
+                    with c5:
+                        st.caption("👤 Cliente Asignado")
+                        val_cli = fila['cliente'] if str(fila['cliente']) != "" else "---"
+                        st.markdown(f"**{val_cli}**")
+                    with c6:
+                        st.caption("🚛 Placa / Vehículo")
+                        val_placa = fila['placa'] if str(fila['placa']) != "" else "---"
+                        st.markdown(f"**{val_placa}**")
 
     # --- PANTALLA REGISTRAR ---
     elif choice == "Registrar SIM":
@@ -633,6 +647,7 @@ def app_control_sim():
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_export.to_excel(writer, index=False)
             st.download_button(label="📥 Descargar Excel con Formato", data=buffer.getvalue(), file_name="reporte_sims.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             st.dataframe(df_export)
+            
 # ==============================================================================
 # 5. MÓDULO C: GESTIÓN USUARIOS (CON EMAIL Y NOMBRE COMPLETO)
 # ==============================================================================
@@ -765,5 +780,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
