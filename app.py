@@ -788,18 +788,70 @@ def app_control_sim():
             if len(d)>0: df = df[(df['fd'].dt.date >= d[0]) & (df['fd'].dt.date <= (d[1] if len(d)>1 else d[0]))]
             st.dataframe(df.drop(columns=['fd']), use_container_width=True)
 
+   # --- REPORTES (CON FILTRO DE SEGURIDAD GEOGRÁFICA) ---
     elif choice == "Reportes":
-        st.subheader("Reportes")
-        df = leer_datos("sims")
-        if paises_user: df = df[df['pais'].isin(paises_user)]
+        st.subheader("📑 Reportes Operativos")
+        
+        # 1. Cargar Datos Crudos
+        df_raw = leer_datos("sims")
+        
+        # 2. FILTRO DE SEGURIDAD (EL CANDADO) 🔒
+        # Recuperamos los países que este usuario tiene permiso de ver
+        permisos_paises = st.session_state.get('paises_asignados', [])
+        
+        # Aplicamos el filtro: Solo mostramos filas donde el país esté en su lista de permisos
+        if permisos_paises:
+            df = df_raw[df_raw['pais'].isin(permisos_paises)]
+        else:
+            # Si por error no tiene países asignados:
+            if st.session_state.rol == 'admin':
+                df = df_raw # El admin ve todo por defecto si no tiene restricciones
+            else:
+                df = pd.DataFrame(columns=df_raw.columns) # El usuario general ve vacío
+        
         if not df.empty:
-            p = st.sidebar.multiselect("País", df['pais'].unique())
-            if p: df = df[df['pais'].isin(p)]
-            if st.session_state.rol != 'admin': df = df.drop(columns=['costo_q','costo_d'], errors='ignore')
-            b = io.BytesIO()
-            with pd.ExcelWriter(b, engine='openpyxl') as w: df.to_excel(w, index=False)
-            st.download_button("Descargar", b.getvalue(), "reporte.xlsx")
-            st.dataframe(df)
+            # 3. Filtro Visual (Opcional para el usuario)
+            # El usuario puede querer ver solo uno de sus países permitidos
+            paises_disponibles = df['pais'].unique()
+            
+            # Si tiene más de un país asignado, le mostramos el filtro para que elija
+            if len(paises_disponibles) > 1:
+                filtro_pais = st.sidebar.multiselect("Filtrar reporte por:", paises_disponibles)
+                if filtro_pais:
+                    df = df[df['pais'].isin(filtro_pais)]
+            
+            # 4. Preparar Exportación (Limpiar columnas privadas)
+            df_export = df.copy()
+            
+            if st.session_state.rol != 'admin':
+                # ELIMINAR COSTOS PARA ROL GENERAL
+                df_export = df_export.drop(columns=['costo_q', 'costo_d'], errors='ignore')
+            else:
+                # FORMATO DE MONEDA PARA ADMIN
+                try:
+                    df_export['costo_q'] = df_export['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
+                    df_export['costo_d'] = df_export['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
+                except: pass
+
+            # 5. Botón de Descarga
+            st.caption(f"Mostrando {len(df_export)} registros autorizados.")
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: 
+                df_export.to_excel(writer, index=False)
+            
+            st.download_button(
+                label="📥 Descargar Excel", 
+                data=buffer.getvalue(), 
+                file_name=f"reporte_sims_{date.today()}.xlsx", 
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            # 6. Mostrar Tabla
+            st.dataframe(df_export, use_container_width=True)
+            
+        else:
+            st.warning("No se encontraron registros para los países que tienes asignados.")
 
 # ==============================================================================
 # 5. MAIN
@@ -856,6 +908,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
