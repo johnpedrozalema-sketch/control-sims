@@ -23,7 +23,7 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'credenciales.json'
 
 # Lista Maestra de Países
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia", "Republica Dominicana"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD (LOGIN, HASH, FECHA, GOOGLE)
@@ -130,7 +130,13 @@ def leer_datos(pestaña):
         ws = conectar_google().worksheet(pestaña)
         data = ws.get_all_records()
         df = pd.DataFrame(data) if data else pd.DataFrame()
-        # Estructura base para evitar errores si está vacío
+        
+        # --- CORRECCIÓN DE ESPACIOS EN BLANCO ---
+        # Esto limpia espacios invisibles en TODAS las columnas de texto
+        if not df.empty:
+            df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        # ----------------------------------------
+
         if pestaña == "sims" and df.empty:
             return pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
         if pestaña == "clientes" and df.empty:
@@ -738,4 +744,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
