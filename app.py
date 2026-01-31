@@ -509,69 +509,110 @@ def app_control_sim():
                         c, d = procesar_carga_masiva_turbo(df_up, st.session_state.usuario)
                         st.success(f"Nuevas: {c} | Duplicadas: {d}")
 
-    # --- ACTUALIZAR (MEJORADO CON EDICIÓN MASIVA) ---
+    # --- ACTUALIZAR (CORREGIDO: Inicio Vacío + Resumen Cambios) ---
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Edición de Inventario")
         
-        tab_unit, tab_masiva = st.tabs(["Edición Unitaria", "Edición Masiva (Excel)"])
+        # Inicializamos variables de estado para el flujo de limpieza
+        if 'update_key' not in st.session_state: st.session_state.update_key = 0
+        if 'resumen_cambios' not in st.session_state: st.session_state.resumen_cambios = None
         
-        # 1. EDICIÓN UNITARIA
-        with tab_unit:
-            df_raw = leer_datos("sims")
-            df = filtrar_por_pais(df_raw)
-            if not df.empty:
-                df['disp'] = df['iccid'].astype(str) + " | " + df['cliente'].astype(str)
-                sel = st.selectbox("Buscar SIM:", df['disp'].tolist())
-                if sel:
-                    ic = sel.split(" | ")[0]
-                    cur = df[df['iccid']==ic].iloc[0]
-                    with st.form("edit"):
-                        c1, c2 = st.columns(2)
-                        nl = c1.text_input("Línea", value=cur['numero_linea'])
-                        nc = c2.text_input("Cliente", value=cur['cliente'])
-                        np = c1.text_input("Placa", value=cur['placa'])
-                        npl = c2.text_input("Plan", value=cur['tipo_plan'])
-                        
-                        idx_p = 0
-                        if cur['pais'] in paises_usuario: idx_p = paises_usuario.index(cur['pais'])
-                        npa = c1.selectbox("País", paises_usuario, index=idx_p)
-                        
-                        ncq = c2.number_input("Costo Q", value=limpiar_moneda(cur['costo_q']))
-                        ncd = c1.number_input("Costo $", value=limpiar_moneda(cur['costo_d']))
-                        
-                        if st.form_submit_button("Actualizar"):
-                            d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': cur['imei'], 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
-                            if actualizar_datos_sim(ic, d, st.session_state.usuario):
-                                st.success("Actualizado"); refrescar_pagina(2)
-        
-        # 2. EDICIÓN MASIVA
-        with tab_masiva:
-            st.info("Sube un Excel con la columna 'iccid' y las columnas que quieras actualizar (ej: 'numero_linea', 'cliente').")
-            
-            modo = st.radio("Modo de Actualización:", 
-                           ["Rellenar solo vacíos (No borra datos previos)", 
-                            "Sobrescribir todo (Actualiza forzosamente)"])
-            
-            archivo_update = st.file_uploader("Subir Excel de Actualización", type=["xlsx"])
-            
-            if archivo_update:
-                df_up = pd.read_excel(archivo_update)
-                st.dataframe(df_up.head())
-                st.caption(f"Filas detectadas: {len(df_up)}")
+        # Si acabamos de actualizar exitosamente, mostramos el resumen y el botón de aceptar
+        if st.session_state.resumen_cambios:
+            with st.container(border=True):
+                st.success("✅ ¡Actualización Exitosa!")
+                st.markdown("### Resumen de cambios realizados:")
                 
-                if st.button("Ejecutar Actualización Masiva"):
-                    with st.spinner("Procesando actualizaciones..."):
-                        solo_vacios = True if "Rellenar" in modo else False
-                        cant, msg = procesar_actualizacion_masiva(df_up, st.session_state.usuario, solo_vacios)
+                # Mostramos la lista de cambios
+                if len(st.session_state.resumen_cambios) > 0:
+                    for cambio in st.session_state.resumen_cambios:
+                        st.markdown(f"- {cambio}")
+                else:
+                    st.info("Se guardó el registro, pero no se detectaron cambios en los datos.")
+                
+                st.markdown("---")
+                
+                # Botón para limpiar y volver a empezar
+                if st.button("Aceptar y Realizar otra búsqueda", type="primary"):
+                    st.session_state.resumen_cambios = None # Limpiamos el resumen
+                    st.session_state.update_key += 1 # Esto fuerza al buscador a reiniciarse
+                    st.rerun()
+        
+        else:
+            # FLUJO NORMAL DE BÚSQUEDA Y EDICIÓN
+            tab_unit, tab_masiva = st.tabs(["Edición Unitaria", "Edición Masiva (Excel)"])
+            
+            # 1. EDICIÓN UNITARIA
+            with tab_unit:
+                df_raw = leer_datos("sims")
+                df = filtrar_por_pais(df_raw)
+                
+                if not df.empty:
+                    df['disp'] = df['iccid'].astype(str) + " | " + df['cliente'].astype(str)
+                    
+                    # BÚSQUEDA: Usamos una key dinámica para poder resetearlo desde el código
+                    sel = st.selectbox(
+                        "Buscar SIM:", 
+                        df['disp'].tolist(), 
+                        index=None, 
+                        placeholder="Escribe para buscar...",
+                        key=f"search_box_{st.session_state.update_key}"
+                    )
+                    
+                    if sel:
+                        ic = sel.split(" | ")[0]
+                        cur = df[df['iccid']==ic].iloc[0]
                         
-                        if cant > 0:
-                            st.balloons()
-                            st.success(f"✅ {msg}")
-                            # Mostrar detalles
-                            st.write("Datos actualizados correctamente en la nube.")
-                        else:
-                            st.warning(msg)
+                        st.info(f"Editando SIM: **{ic}**")
+                        
+                        with st.form("edit"):
+                            c1, c2 = st.columns(2)
+                            nl = c1.text_input("Línea", value=cur['numero_linea'])
+                            nc = c2.text_input("Cliente", value=cur['cliente'])
+                            np = c1.text_input("Placa", value=cur['placa'])
+                            npl = c2.text_input("Plan", value=cur['tipo_plan'])
+                            
+                            idx_p = 0
+                            if cur['pais'] in paises_usuario: idx_p = paises_usuario.index(cur['pais'])
+                            npa = c1.selectbox("País", paises_usuario, index=idx_p)
+                            
+                            ncq = c2.number_input("Costo Q", value=limpiar_moneda(cur['costo_q']))
+                            ncd = c1.number_input("Costo $", value=limpiar_moneda(cur['costo_d']))
+                            
+                            if st.form_submit_button("Actualizar Datos"):
+                                # 1. Detectar Cambios para el resumen
+                                cambios_detectados = []
+                                if str(nl) != str(cur['numero_linea']): cambios_detectados.append(f"Línea: {cur['numero_linea']} ➝ **{nl}**")
+                                if str(nc) != str(cur['cliente']): cambios_detectados.append(f"Cliente: {cur['cliente']} ➝ **{nc}**")
+                                if str(np) != str(cur['placa']): cambios_detectados.append(f"Placa: {cur['placa']} ➝ **{np}**")
+                                if str(npl) != str(cur['tipo_plan']): cambios_detectados.append(f"Plan: {cur['tipo_plan']} ➝ **{npl}**")
+                                if str(npa) != str(cur['pais']): cambios_detectados.append(f"País: {cur['pais']} ➝ **{npa}**")
+                                if float(ncq) != float(limpiar_moneda(cur['costo_q'])): cambios_detectados.append(f"Costo Q: {cur['costo_q']} ➝ **{ncq}**")
+                                if float(ncd) != float(limpiar_moneda(cur['costo_d'])): cambios_detectados.append(f"Costo $: {cur['costo_d']} ➝ **{ncd}**")
 
+                                # 2. Guardar en BD
+                                d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': cur['imei'], 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
+                                
+                                if actualizar_datos_sim(ic, d, st.session_state.usuario):
+                                    # 3. Guardar cambios en sesión y recargar para mostrar resumen
+                                    st.session_state.resumen_cambios = cambios_detectados
+                                    st.rerun()
+            
+            # 2. EDICIÓN MASIVA (Se mantiene igual)
+            with tab_masiva:
+                st.info("Sube un Excel con la columna 'iccid' y las columnas que quieras actualizar.")
+                modo = st.radio("Modo:", ["Rellenar vacíos", "Sobrescribir todo"])
+                archivo_update = st.file_uploader("Subir Excel", type=["xlsx"])
+                if archivo_update:
+                    df_up = pd.read_excel(archivo_update)
+                    if st.button("Ejecutar Masiva"):
+                        with st.spinner("Procesando..."):
+                            sv = True if "Rellenar" in modo else False
+                            cant, msg = procesar_actualizacion_masiva(df_up, st.session_state.usuario, sv)
+                            if cant > 0:
+                                st.balloons(); st.success(f"✅ {msg}")
+                            else: st.warning(msg)
+    
     # --- TRASLADOS ---
     elif choice == "Traslados":
         st.subheader("🔄 Traslados")
@@ -740,4 +781,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
