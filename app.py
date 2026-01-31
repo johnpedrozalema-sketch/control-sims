@@ -491,37 +491,73 @@ def app_control_sim():
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
 
     # --- PANTALLA DASHBOARD ---
+    # --- DASHBOARD (ACTUALIZADO CON GRÁFICO POR PAÍS) ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
+        # 1. Leemos todo
         df_raw = leer_datos("sims")
-        # Filtro de seguridad (Solo ve sus países)
+        
+        # 2. Filtramos por país permitido (Seguridad)
         if st.session_state.paises_asignados:
-             # Si tiene países asignados, filtramos. Si es admin y no tiene (lista vacía), asume todo.
-             # Ajuste: Si paises_asignados tiene datos, filtra.
              df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
         else:
-             df = df_raw # Si no hay restricción (o es admin full), ve todo.
+             df = df_raw 
         
         if not df.empty and 'estado' in df.columns:
+            # --- SECCIÓN 1: MÉTRICAS GENERALES ---
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Inventario", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
             c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
 
+            # --- SECCIÓN 2: DISTRIBUCIÓN POR PAÍS (NUEVO) ---
+            st.markdown("---")
+            st.subheader("🌍 Distribución Geográfica")
+            
+            if 'pais' in df.columns:
+                # Contamos cuántas SIMs hay por país
+                conteo_paises = df['pais'].value_counts().reset_index()
+                conteo_paises.columns = ["País", "Cantidad"] # Renombramos cabeceras para que se vea bonito
+
+                col_grafico, col_tabla = st.columns([2, 1])
+
+                with col_grafico:
+                    # Gráfico de barras automático
+                    st.bar_chart(conteo_paises.set_index("País"))
+                
+                with col_tabla:
+                    # Tabla de datos
+                    st.dataframe(
+                        conteo_paises, 
+                        hide_index=True, 
+                        use_container_width=True,
+                        column_config={
+                            "Cantidad": st.column_config.ProgressColumn(
+                                "Volumen", 
+                                format="%d", 
+                                min_value=0, 
+                                max_value=int(conteo_paises['Cantidad'].max())
+                            )
+                        }
+                    )
+
+            # --- SECCIÓN 3: FINANCIERO (SOLO ADMIN) ---
             if st.session_state.rol == 'admin':
                 st.markdown("---")
                 st.subheader("💰 Facturación Mensual Estimada")
+                
+                # Aplicamos limpieza de moneda
                 df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
                 df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
-                df_activas = df[df['estado'] == 'Activa']
-                total_q = df_activas['costo_q_calc'].sum()
-                total_d = df_activas['costo_d_calc'].sum()
+                
+                act = df[df['estado'] == 'Activa']
+                
                 k1, k2 = st.columns(2)
-                k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
-                k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
+                k1.metric("Total Quetzales (Q)", f"Q {act['costo_q_calc'].sum():,.2f}")
+                k2.metric("Total Dólares ($)", f"$ {act['costo_d_calc'].sum():,.2f}")
         else:
-            st.info("Cargando datos o sin permisos para ver registros...")
+            st.info("No hay datos disponibles para tu región.")
 
     # --- PANTALLA CONSULTA SIM ---
     elif choice == "🔍 Consulta SIM":
@@ -955,6 +991,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
