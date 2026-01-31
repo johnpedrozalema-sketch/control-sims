@@ -130,6 +130,59 @@ def gestionar_reset_password():
         else: st.error("Token inválido.")
         return True
     return False
+    # --- NUEVAS FUNCIONES PARA GESTIÓN DE USUARIOS ---
+
+def actualizar_usuario_batch(df_cambios):
+    """
+    Recibe un DataFrame con los cambios y actualiza Google Sheets.
+    """
+    try:
+        sheet = conectar_google()
+        ws = sheet.worksheet("usuarios")
+        
+        # Obtenemos todos los datos actuales para mapear filas
+        # Asumimos que el email está en la columna 1 (A)
+        lista_emails = ws.col_values(1)
+        
+        updates = []
+        
+        for index, row in df_cambios.iterrows():
+            email_target = str(row['email'])
+            
+            if email_target in lista_emails:
+                # Google Sheets es base 1, Python base 0. El header es fila 1.
+                # index+1 es la posición en la lista, pero la lista incluye el header?
+                # Lo más seguro es usar .find() o calcular índice si el orden no cambió.
+                try:
+                    row_num = lista_emails.index(email_target) + 1
+                    
+                    # Mapeo de columnas: Rol(3), Nombre(4), Paises(6)
+                    # Basado en estructura: | email | pass | rol | nombre | token | paises |
+                    
+                    updates.append({'range': f'C{row_num}', 'values': [[row['rol']]]})
+                    updates.append({'range': f'D{row_num}', 'values': [[row['nombre']]]})
+                    updates.append({'range': f'F{row_num}', 'values': [[row['paises']]]})
+                except:
+                    pass
+
+        if updates:
+            ws.batch_update(updates)
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error al actualizar: {e}")
+        return False
+
+def eliminar_usuario_db(email_a_borrar):
+    try:
+        sheet = conectar_google()
+        ws = sheet.worksheet("usuarios")
+        cell = ws.find(email_a_borrar)
+        ws.delete_rows(cell.row)
+        return True
+    except Exception as e:
+        st.error(f"Error al eliminar: {e}")
+        return False
 
 # ==============================================================================
 # 3. LÓGICA DE NEGOCIO SIMS
@@ -678,37 +731,125 @@ def app_control_sim():
             st.dataframe(df_exp)
 
 # ==============================================================================
-# 5. GESTIÓN USUARIOS (CON ASIGNACIÓN DE PAÍSES)
+# 5. GESTIÓN USUARIOS (CON EDICIÓN Y ELIMINACIÓN)
 # ==============================================================================
 def app_gestion_usuarios():
     st.markdown("## 👤 Usuarios & Permisos")
-    t1, t2 = st.tabs(["Crear Usuario", "Ver Lista"])
     
-    with t1:
+    tab1, tab2 = st.tabs(["➕ Crear Usuario", "✏️ Editar / ❌ Eliminar"])
+    
+    # --- TAB 1: CREAR (Se mantiene igual, solo compactado visualmente) ---
+    with tab1:
+        st.info("El usuario recibirá un correo para activar su cuenta.")
         with st.form("crear"):
             c1, c2 = st.columns(2)
             mail = c1.text_input("Correo (Usuario)")
             nom = c2.text_input("Nombre Completo")
             rol = c1.selectbox("Rol", ["admin", "general"])
-            # NUEVO: Selector de Países
             paises_asig = c2.multiselect("Países Permitidos", LISTA_PAISES, default=["Guatemala"])
             
-            if st.form_submit_button("Crear"):
+            if st.form_submit_button("Crear Usuario"):
                 if mail and nom and paises_asig:
                     ws = conectar_google().worksheet("usuarios")
-                    if mail in ws.col_values(1): st.error("Existe")
+                    if mail in ws.col_values(1): 
+                        st.error("El usuario ya existe.")
                     else:
                         tok = str(uuid.uuid4())
-                        str_paises = ",".join(paises_asig) # Guardamos como texto "Guatemala,Panamá"
-                        # Orden: email, pass, rol, nombre, token, paises
+                        str_paises = ",".join(paises_asig)
                         ws.append_row([mail, "PENDIENTE", rol, nom, tok, str_paises])
-                        enviar_link_activacion(mail, tok, nom)
-                        st.success("Creado y correo enviado.")
-                else: st.warning("Datos incompletos")
+                        if enviar_link_activacion(mail, tok, nom):
+                            st.success("Creado y correo enviado.")
+                        else:
+                            st.warning("Creado en DB, pero falló el envío de correo.")
+                else: 
+                    st.warning("Complete todos los campos.")
 
-    with t2:
-        df = pd.DataFrame(conectar_google().worksheet("usuarios").get_all_records())
-        if not df.empty: st.dataframe(df[['email','nombre','rol','paises']])
+    # --- TAB 2: VER, EDITAR Y ELIMINAR ---
+    with tab2:
+        st.subheader("📋 Directorio de Usuarios")
+        
+        # 1. Cargar Datos
+        ws = conectar_google().worksheet("usuarios")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+
+        if not df.empty:
+            # Aseguramos que existan las columnas clave
+            required_cols = ['email', 'nombre', 'rol', 'paises']
+            df_view = df[required_cols].copy()
+            
+            # --- ZONA DE EDICIÓN ---
+            st.caption("💡 Puedes editar 'Nombre', 'Rol' y 'Países' directamente en la tabla. El correo no se puede cambiar.")
+            
+            edited_df = st.data_editor(
+                df_view,
+                column_config={
+                    "email": st.column_config.TextColumn(
+                        "Correo Electrónico",
+                        help="Identificador único (No editable)",
+                        disabled=True, # Bloqueamos edición de email
+                    ),
+                    "rol": st.column_config.SelectboxColumn(
+                        "Rol",
+                        options=["admin", "general"],
+                        required=True,
+                        width="small"
+                    ),
+                    "nombre": st.column_config.TextColumn("Nombre Completo"),
+                    "paises": st.column_config.TextColumn(
+                        "Países (Separados por coma)",
+                        help="Ej: Guatemala,El Salvador"
+                    ),
+                },
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed", # No permitir agregar filas aquí (usar Tab 1)
+                key="editor_usuarios"
+            )
+
+            # Botón para guardar cambios
+            col_save, _ = st.columns([1, 4])
+            if col_save.button("💾 Guardar Cambios"):
+                # Comparamos si hubo cambios reales
+                if not edited_df.equals(df_view):
+                    with st.spinner("Actualizando permisos..."):
+                        if actualizar_usuario_batch(edited_df):
+                            st.success("Datos actualizados correctamente.")
+                            time.sleep(1)
+                            st.rerun()
+                else:
+                    st.info("No hay cambios pendientes por guardar.")
+
+            st.divider()
+
+            # --- ZONA DE ELIMINACIÓN ---
+            st.subheader("🗑️ Eliminar Usuario")
+            with st.container(border=True):
+                col_del_1, col_del_2 = st.columns([3, 1])
+                
+                # Selector para elegir a quién borrar (evita errores de dedo)
+                # Excluimos al usuario actual para que no se borre a sí mismo
+                opciones_borrar = df[df['email'] != st.session_state.usuario]['email'].tolist()
+                
+                user_to_delete = col_del_1.selectbox(
+                    "Seleccione el usuario a eliminar:", 
+                    opciones_borrar,
+                    index=None,
+                    placeholder="Seleccionar correo..."
+                )
+                
+                # Botón con confirmación
+                if col_del_2.button("Eliminar Definitivamente", type="primary", disabled=(not user_to_delete)):
+                    if user_to_delete:
+                        with st.spinner(f"Eliminando a {user_to_delete}..."):
+                            if eliminar_usuario_db(user_to_delete):
+                                st.success(f"Usuario {user_to_delete} eliminado.")
+                                time.sleep(1.5)
+                                st.rerun()
+                            else:
+                                st.error("No se pudo eliminar.")
+        else:
+            st.warning("No se encontraron usuarios en la base de datos.")
 
 # ==============================================================================
 # 6. MAIN
@@ -781,5 +922,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
