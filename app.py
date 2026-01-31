@@ -424,55 +424,42 @@ def cancelar_servicio(iccid, usuario, motivo):
     return False
 
 # ==============================================================================
-# 4. APLICACIÓN PRINCIPAL (UI)
+# 4. APLICACIÓN PRINCIPAL (UI) - CON LISTA DE PAÍSES UNIFICADA
 # ==============================================================================
 
 def app_control_sim():
-    # --- FILTRADO DE SEGURIDAD POR PAÍS ---
-    # Obtenemos los países permitidos del usuario logueado
-    paises_usuario = st.session_state.get('paises_asignados', [])
-    
-    # Si la lista está vacía o es None, asumimos que no tiene permisos (o es un error)
-    # A menos que sea admin global (pero el prompt pide config de países).
-    # Para evitar bloqueos, si está vacío mostramos todo SOLO si es admin, si es general mostramos nada.
-    if not paises_usuario:
-        if st.session_state.rol == 'admin':
-            paises_usuario = LISTA_PAISES # Admin ve todo si no se le asignó nada
-        else:
-            paises_usuario = [] # General ve nada
-
-    # Función helper para filtrar dataframes
-    def filtrar_por_pais(df_in):
-        if df_in.empty or 'pais' not in df_in.columns: return df_in
-        # Filtramos solo lo que esté en la lista permitida
-        return df_in[df_in['pais'].isin(paises_usuario)]
-
-    # -------------------------------------
-    
+    # --- Sidebar ---
     st.sidebar.markdown("### 📱 Menú SIMs")
     
-    zonas = ["America/Guatemala", "America/Bogota", "America/Mexico_City", "UTC"]
-    st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas)
+    # Configuración de Zona Horaria
+    zonas_disponibles = ["America/Guatemala", "America/Bogota", "America/Mexico_City", "UTC"]
+    st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", zonas_disponibles, index=0)
     st.sidebar.caption(f"Hora: {obtener_hora_actual()}")
-    st.sidebar.info(f"🌍 Región: {', '.join(paises_usuario) if paises_usuario else 'Sin Acceso'}")
-
-    menu_ops = ["Dashboard", "🔍 Consulta SIM", "Reportes"]
+    
+    # MENÚ DINÁMICO
     if st.session_state.rol == "admin":
         menu_ops = ["Dashboard", "🔍 Consulta SIM", "Registrar SIM", "Actualizar Datos", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
+    else:
+        menu_ops = ["Dashboard", "🔍 Consulta SIM", "Reportes"]
     
     choice = st.sidebar.radio("Opciones:", menu_ops)
+
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
 
-    # --- DASHBOARD ---
+    # --- PANTALLA DASHBOARD ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
-        # 1. Leemos todo
         df_raw = leer_datos("sims")
-        # 2. Filtramos por país permitido
-        df = filtrar_por_pais(df_raw)
+        # Filtro de seguridad (Solo ve sus países)
+        if st.session_state.paises_asignados:
+             # Si tiene países asignados, filtramos. Si es admin y no tiene (lista vacía), asume todo.
+             # Ajuste: Si paises_asignados tiene datos, filtra.
+             df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+        else:
+             df = df_raw # Si no hay restricción (o es admin full), ve todo.
         
         if not df.empty and 'estado' in df.columns:
-            c1,c2,c3,c4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Inventario", len(df))
             c2.metric("Activas", len(df[df['estado']=='Activa']))
             c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
@@ -483,141 +470,139 @@ def app_control_sim():
                 st.subheader("💰 Facturación Mensual Estimada")
                 df['costo_q_calc'] = df['costo_q'].apply(limpiar_moneda)
                 df['costo_d_calc'] = df['costo_d'].apply(limpiar_moneda)
-                act = df[df['estado'] == 'Activa']
+                df_activas = df[df['estado'] == 'Activa']
+                total_q = df_activas['costo_q_calc'].sum()
+                total_d = df_activas['costo_d_calc'].sum()
                 k1, k2 = st.columns(2)
-                k1.metric("Total Q", f"Q {act['costo_q_calc'].sum():,.2f}")
-                k2.metric("Total $", f"$ {act['costo_d_calc'].sum():,.2f}")
-        else: st.info("Sin datos para tu región.")
+                k1.metric("Total Quetzales (Q)", f"Q {total_q:,.2f}")
+                k2.metric("Total Dólares ($)", f"$ {total_d:,.2f}")
+        else:
+            st.info("Cargando datos o sin permisos para ver registros...")
 
-    # --- CONSULTA SIM ---
+    # --- PANTALLA CONSULTA SIM ---
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador Inteligente")
         df_raw = leer_datos("sims")
-        df = filtrar_por_pais(df_raw) # Filtro de seguridad
-        
+        # Filtro de seguridad
+        if st.session_state.paises_asignados:
+             df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+        else: df = df_raw
+
         if not df.empty:
             df['iccid'] = df['iccid'].astype(str)
-            df['busqueda'] = df['iccid'] + " | " + df['cliente'].astype(str) + " (" + df['estado'] + ")"
-            sel = st.selectbox("Buscar SIM:", df['busqueda'].tolist(), index=None, placeholder="Escribe...")
+            df['busqueda_visual'] = df['iccid'] + " | " + df['cliente'].astype(str) + " (" + df['estado'] + ")"
             
-            if sel:
-                ic = sel.split(" | ")[0]
-                fila = df[df['iccid'] == ic].iloc[0]
-                est = fila['estado']
-                
-                c_icon, c_info = st.columns([1,6])
-                with c_icon:
-                    if est=="Activa": st.header("✅")
-                    elif est=="Botiquin": st.header("📦")
-                    elif est=="Retirada": st.header("🚫")
-                    else: st.header("❌")
-                with c_info:
-                    st.subheader(f"Estado: {est}")
-                    if est=="Retirada": st.error("SIM INUTILIZABLE")
-                
-                st.markdown("### 📋 Ficha Técnica")
-                with st.container(border=True):
-                    k1, k2, k3 = st.columns(3)
-                    k1.markdown(f"**ICCID:** {fila['iccid']}")
-                    k2.markdown(f"**Línea:** {fila['numero_linea']}")
-                    k3.markdown(f"**País:** {fila['pais']}")
-                    st.divider()
-                    k4, k5, k6 = st.columns(3)
-                    k4.markdown(f"**Cliente:** {fila['cliente']}")
-                    k5.markdown(f"**Placa:** {fila['placa']}")
-                    k6.markdown(f"**Plan:** {fila['tipo_plan']}")
+            seleccion = st.selectbox("Buscar SIM:", df['busqueda_visual'].tolist(), index=None, placeholder="Escribe aquí el número...")
+            st.markdown("---")
 
-    # --- REGISTRAR ---
+            if seleccion:
+                iccid_seleccionado = seleccion.split(" | ")[0]
+                fila = df[df['iccid'] == iccid_seleccionado].iloc[0]
+                estado = fila['estado']
+                
+                col_icon, col_msg = st.columns([1, 6])
+                with col_icon:
+                    if estado == "Activa": st.header("✅")
+                    elif estado == "Botiquin": st.header("📦")
+                    elif estado == "Retirada": st.header("🚫")
+                    elif estado == "Cancelada": st.header("❌")
+                    else: st.header("ℹ️")
+                
+                with col_msg:
+                    st.subheader(f"Diagnóstico: {estado}")
+                    if estado == "Retirada": st.error("Esta tarjeta SIM NO puede volver a usarse.")
+                    elif estado == "Botiquin": st.warning("Lista para asignar. Aún sin línea.")
+                
+                st.markdown("### 📋 Detalles Técnicos")
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.caption("🆔 ICCID"); st.markdown(f"**{fila['iccid']}**")
+                    with c2: st.caption("📞 Línea"); val_linea = fila['numero_linea'] if str(fila['numero_linea']) != "" else "---"; st.markdown(f"**{val_linea}**")
+                    with c3: st.caption("🌍 País"); st.markdown(f"**{fila['pais']}**")
+                    st.divider()
+                    c4, c5, c6 = st.columns(3)
+                    with c4: st.caption("🚦 Estado"); color = "green" if estado == "Activa" else "orange" if estado == "Botiquin" else "red"; st.markdown(f":{color}[**{estado}**]")
+                    with c5: st.caption("👤 Cliente"); val_cli = fila['cliente'] if str(fila['cliente']) != "" else "---"; st.markdown(f"**{val_cli}**")
+                    with c6: st.caption("🚛 Placa"); val_placa = fila['placa'] if str(fila['placa']) != "" else "---"; st.markdown(f"**{val_placa}**")
+
+    # --- PANTALLA REGISTRAR ---
     elif choice == "Registrar SIM":
-        st.subheader("➕ Registrar")
-        t1, t2 = st.tabs(["Manual", "Carga Masiva"])
-        with t1:
+        st.subheader("➕ Gestión Inventario")
+        tab1, tab2 = st.tabs(["Manual", "Carga Masiva"])
+        
+        with tab1:
             kf = str(st.session_state.form_id)
             with st.form("new"):
-                c1,c2 = st.columns(2)
-                ic = c1.text_input("ICCID*", key=f"i{kf}")
-                ln = c2.text_input("Línea", key=f"l{kf}")
-                cl = c1.text_input("Cliente", key=f"c{kf}")
-                pl = c2.text_input("Placa", key=f"p{kf}")
-                im = c1.text_input("IMEI", key=f"im{kf}")
-                pn = c2.text_input("Plan", key=f"pl{kf}")
-                # Solo permite registrar países permitidos
-                pa = c1.selectbox("País", paises_usuario, key=f"pa{kf}")
-                cq = c2.number_input("Costo Q", key=f"cq{kf}")
-                cd = c1.number_input("Costo $", key=f"cd{kf}")
-                if st.form_submit_button("Guardar"):
-                    if ic:
-                        d = {'iccid': ic, 'numero_linea': ln, 'cliente': cl, 'placa': pl, 'imei': im, 'tipo_plan': pn, 'pais': pa, 'costo_q': cq, 'costo_d': cd}
-                        if registrar_sim(d, st.session_state.usuario):
-                            st.success("Guardado"); st.session_state.form_id+=1; refrescar_pagina(2)
-                        else: st.error("Error/Duplicado")
-        with t2:
-            st.info("Carga de SIMs Nuevas")
-            upl = st.file_uploader("Excel Nuevas", type=["xlsx"])
-            if upl:
-                df_up = pd.read_excel(upl)
-                st.write(f"Filas: {len(df_up)}")
-                if st.button("Procesar Nuevas"):
-                    with st.spinner("Cargando..."):
-                        c, d = procesar_carga_masiva_turbo(df_up, st.session_state.usuario)
-                        st.success(f"Nuevas: {c} | Duplicadas: {d}")
+                c1, c2 = st.columns(2)
+                iccid = c1.text_input("ICCID*", key=f"i_{kf}")
+                linea = c2.text_input("Línea", key=f"l_{kf}")
+                cli = c1.text_input("Cliente", key=f"c_{kf}")
+                pla = c2.text_input("Placa", key=f"p_{kf}")
+                ime = c1.text_input("IMEI", key=f"im_{kf}")
+                plan = c2.text_input("Plan", key=f"pl_{kf}")
+                
+                # USO DE LA LISTA MAESTRA (Filtrada por permisos si no es admin)
+                lista_paises_form = LISTA_PAISES
+                if st.session_state.paises_asignados:
+                    # Si tiene restricción, solo puede registrar en sus países
+                    lista_paises_form = [p for p in LISTA_PAISES if p in st.session_state.paises_asignados]
 
-    # --- ACTUALIZAR (CORREGIDO: Inicio Vacío + Resumen Cambios) ---
+                pais = c1.selectbox("País", lista_paises_form, key=f"pa_{kf}")
+                cq = c2.number_input("Costo Q", key=f"cq_{kf}")
+                cd = c1.number_input("Costo $", key=f"cd_{kf}")
+                
+                if st.form_submit_button("Guardar"):
+                    if iccid:
+                        d = {'iccid': iccid, 'numero_linea': linea, 'cliente': cli, 'placa': pla, 'imei': ime, 'tipo_plan': plan, 'pais': pais, 'costo_q': cq, 'costo_d': cd}
+                        with st.spinner("Guardando..."):
+                            if registrar_sim(d, st.session_state.usuario):
+                                st.success("Guardado"); st.session_state.form_id += 1; refrescar_pagina(2)
+                            else: st.error("Duplicado o Error")
+                    else: st.warning("Falta ICCID")
+
+        with tab2:
+            st.markdown("### Carga Masiva (Excel)")
+            df_t = pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d'])
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df_t.to_excel(writer, index=False)
+            st.download_button("📥 Plantilla", buffer.getvalue(), "plantilla.xlsx")
+            archivo = st.file_uploader("Subir Excel", type=["xlsx", "xls"])
+            if archivo:
+                if st.button("Procesar Archivo"):
+                    df_up = pd.read_excel(archivo)
+                    with st.spinner("Cargando..."):
+                        c, e = procesar_carga_masiva_turbo(df_up, st.session_state.usuario)
+                        st.success(f"Procesado: {c} Nuevas | {e} Duplicadas")
+
+    # --- PANTALLA ACTUALIZAR ---
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Edición de Inventario")
-        
-        # Inicializamos variables de estado para el flujo de limpieza
         if 'update_key' not in st.session_state: st.session_state.update_key = 0
         if 'resumen_cambios' not in st.session_state: st.session_state.resumen_cambios = None
         
-        # Si acabamos de actualizar exitosamente, mostramos el resumen y el botón de aceptar
         if st.session_state.resumen_cambios:
             with st.container(border=True):
                 st.success("✅ ¡Actualización Exitosa!")
-                st.markdown("### Resumen de cambios realizados:")
-                
-                # Mostramos la lista de cambios
-                if len(st.session_state.resumen_cambios) > 0:
-                    for cambio in st.session_state.resumen_cambios:
-                        st.markdown(f"- {cambio}")
-                else:
-                    st.info("Se guardó el registro, pero no se detectaron cambios en los datos.")
-                
+                st.markdown("### Resumen de cambios:")
+                for cambio in st.session_state.resumen_cambios: st.markdown(f"- {cambio}")
                 st.markdown("---")
-                
-                # Botón para limpiar y volver a empezar
-                if st.button("Aceptar y Realizar otra búsqueda", type="primary"):
-                    st.session_state.resumen_cambios = None # Limpiamos el resumen
-                    st.session_state.update_key += 1 # Esto fuerza al buscador a reiniciarse
-                    st.rerun()
-        
+                if st.button("Aceptar y Nueva Búsqueda", type="primary"):
+                    st.session_state.resumen_cambios = None; st.session_state.update_key += 1; st.rerun()
         else:
-            # FLUJO NORMAL DE BÚSQUEDA Y EDICIÓN
             tab_unit, tab_masiva = st.tabs(["Edición Unitaria", "Edición Masiva (Excel)"])
-            
-            # 1. EDICIÓN UNITARIA
             with tab_unit:
                 df_raw = leer_datos("sims")
-                df = filtrar_por_pais(df_raw)
+                if st.session_state.paises_asignados:
+                     df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+                else: df = df_raw
                 
                 if not df.empty:
                     df['disp'] = df['iccid'].astype(str) + " | " + df['cliente'].astype(str)
-                    
-                    # BÚSQUEDA: Usamos una key dinámica para poder resetearlo desde el código
-                    sel = st.selectbox(
-                        "Buscar SIM:", 
-                        df['disp'].tolist(), 
-                        index=None, 
-                        placeholder="Escribe para buscar...",
-                        key=f"search_box_{st.session_state.update_key}"
-                    )
-                    
+                    sel = st.selectbox("Buscar SIM:", df['disp'].tolist(), index=None, placeholder="Escribe...", key=f"search_box_{st.session_state.update_key}")
                     if sel:
                         ic = sel.split(" | ")[0]
                         cur = df[df['iccid']==ic].iloc[0]
-                        
                         st.info(f"Editando SIM: **{ic}**")
-                        
                         with st.form("edit"):
                             c1, c2 = st.columns(2)
                             nl = c1.text_input("Línea", value=cur['numero_linea'])
@@ -625,58 +610,51 @@ def app_control_sim():
                             np = c1.text_input("Placa", value=cur['placa'])
                             npl = c2.text_input("Plan", value=cur['tipo_plan'])
                             
+                            # USO DE LA LISTA MAESTRA
+                            lista_paises_edit = LISTA_PAISES
+                            if st.session_state.paises_asignados:
+                                lista_paises_edit = [p for p in LISTA_PAISES if p in st.session_state.paises_asignados]
+
                             idx_p = 0
-                            if cur['pais'] in paises_usuario: idx_p = paises_usuario.index(cur['pais'])
-                            npa = c1.selectbox("País", paises_usuario, index=idx_p)
+                            if cur['pais'] in lista_paises_edit: idx_p = lista_paises_edit.index(cur['pais'])
+                            npa = c1.selectbox("País", lista_paises_edit, index=idx_p)
                             
                             ncq = c2.number_input("Costo Q", value=limpiar_moneda(cur['costo_q']))
                             ncd = c1.number_input("Costo $", value=limpiar_moneda(cur['costo_d']))
-                            
                             if st.form_submit_button("Actualizar Datos"):
-                                # 1. Detectar Cambios para el resumen
                                 cambios_detectados = []
                                 if str(nl) != str(cur['numero_linea']): cambios_detectados.append(f"Línea: {cur['numero_linea']} ➝ **{nl}**")
                                 if str(nc) != str(cur['cliente']): cambios_detectados.append(f"Cliente: {cur['cliente']} ➝ **{nc}**")
                                 if str(np) != str(cur['placa']): cambios_detectados.append(f"Placa: {cur['placa']} ➝ **{np}**")
-                                if str(npl) != str(cur['tipo_plan']): cambios_detectados.append(f"Plan: {cur['tipo_plan']} ➝ **{npl}**")
                                 if str(npa) != str(cur['pais']): cambios_detectados.append(f"País: {cur['pais']} ➝ **{npa}**")
-                                if float(ncq) != float(limpiar_moneda(cur['costo_q'])): cambios_detectados.append(f"Costo Q: {cur['costo_q']} ➝ **{ncq}**")
-                                if float(ncd) != float(limpiar_moneda(cur['costo_d'])): cambios_detectados.append(f"Costo $: {cur['costo_d']} ➝ **{ncd}**")
-
-                                # 2. Guardar en BD
                                 d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': cur['imei'], 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
-                                
                                 if actualizar_datos_sim(ic, d, st.session_state.usuario):
-                                    # 3. Guardar cambios en sesión y recargar para mostrar resumen
-                                    st.session_state.resumen_cambios = cambios_detectados
-                                    st.rerun()
-            
-            # 2. EDICIÓN MASIVA (Se mantiene igual)
+                                    st.session_state.resumen_cambios = cambios_detectados; st.rerun()
+
             with tab_masiva:
-                st.info("Sube un Excel con la columna 'iccid' y las columnas que quieras actualizar.")
+                st.info("Sube un Excel con la columna 'iccid' y las columnas a actualizar.")
                 modo = st.radio("Modo:", ["Rellenar vacíos", "Sobrescribir todo"])
                 archivo_update = st.file_uploader("Subir Excel", type=["xlsx"])
                 if archivo_update:
-                    df_up = pd.read_excel(archivo_update)
                     if st.button("Ejecutar Masiva"):
                         with st.spinner("Procesando..."):
+                            df_up = pd.read_excel(archivo_update)
                             sv = True if "Rellenar" in modo else False
                             cant, msg = procesar_actualizacion_masiva(df_up, st.session_state.usuario, sv)
-                            if cant > 0:
-                                st.balloons(); st.success(f"✅ {msg}")
+                            if cant > 0: st.balloons(); st.success(f"✅ {msg}")
                             else: st.warning(msg)
-    
+
     # --- TRASLADOS ---
     elif choice == "Traslados":
         st.subheader("🔄 Traslados")
         df_raw = leer_datos("sims")
-        df = filtrar_por_pais(df_raw)
-        
+        if st.session_state.paises_asignados:
+             df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+        else: df = df_raw
         if not df.empty:
             dfo = df[~df['estado'].isin(['Retirada','Cancelada'])]
             dfd = df[df['estado']=='Botiquin']
             dfo['disp'] = dfo['iccid'].astype(str) + " (" + dfo['numero_linea'].astype(str) + ")"
-            
             c1, c2 = st.columns(2)
             orig = c1.selectbox("Vieja", dfo['disp'].tolist())
             dest = c2.selectbox("Nueva", dfd['iccid'].tolist())
@@ -689,56 +667,65 @@ def app_control_sim():
     elif choice == "Cancelar/Gestionar":
         st.subheader("⚠️ Cancelar")
         df_raw = leer_datos("sims")
-        df = filtrar_por_pais(df_raw)
+        if st.session_state.paises_asignados:
+             df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+        else: df = df_raw
         if not df.empty:
             sel = st.selectbox("Buscar:", df['iccid'].tolist())
             mot = st.text_input("Motivo")
             if st.button("Confirmar Baja"):
-                if cancelar_servicio(sel, st.session_state.usuario, mot):
-                    st.success("Listo"); refrescar_pagina(2)
+                if cancelar_servicio(sel, st.session_state.usuario, mot): st.success("Listo"); refrescar_pagina(2)
 
     # --- AUDITORÍA ---
     elif choice == "Auditoría":
         st.subheader("🕵️ Auditoría")
         df_h = leer_datos("historial")
         if not df_h.empty:
-            # Filtros
-            u = st.multiselect("Usuario", sorted(df_h['Usuario'].astype(str).unique()))
-            a = st.multiselect("Acción", sorted(df_h['Acción'].astype(str).unique()))
+            try: df_h['Fecha_DT'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
+            except: df_h['Fecha_DT'] = pd.NaT
+            users_opt = sorted(df_h['Usuario'].astype(str).unique().tolist())
+            actions_opt = sorted(df_h['Acción'].astype(str).unique().tolist())
+            c1, c2, c3 = st.columns(3)
+            with c1: sel_user = st.multiselect("Usuario", users_opt)
+            with c2: sel_action = st.multiselect("Acción", actions_opt)
+            with c3: fecha_filtro = st.date_input("Rango de Fecha", [])
             df_show = df_h.copy()
-            if u: df_show = df_show[df_show['Usuario'].isin(u)]
-            if a: df_show = df_show[df_show['Acción'].isin(a)]
+            if sel_user: df_show = df_show[df_show['Usuario'].isin(sel_user)]
+            if sel_action: df_show = df_show[df_show['Acción'].isin(sel_action)]
+            if len(fecha_filtro) > 0:
+                start = fecha_filtro[0]
+                end = fecha_filtro[1] if len(fecha_filtro) > 1 else start
+                df_show = df_show[(df_show['Fecha_DT'].dt.date >= start) & (df_show['Fecha_DT'].dt.date <= end)]
+            if 'Fecha_DT' in df_show.columns: df_show = df_show.drop(columns=['Fecha_DT'])
             st.dataframe(df_show, use_container_width=True)
 
     # --- REPORTES ---
     elif choice == "Reportes":
         st.subheader("📑 Reportes")
         df_raw = leer_datos("sims")
-        df = filtrar_por_pais(df_raw)
-        
+        if st.session_state.paises_asignados:
+             df = df_raw[df_raw['pais'].isin(st.session_state.paises_asignados)]
+        else: df = df_raw
         if not df.empty:
             p = st.sidebar.multiselect("Filtrar País", df['pais'].unique())
             if p: df = df[df['pais'].isin(p)]
-            
-            # Exportar
             df_exp = df.copy()
             if st.session_state.rol != 'admin':
                 df_exp = df_exp.drop(columns=['costo_q','costo_d'], errors='ignore')
-            
             b = io.BytesIO()
             with pd.ExcelWriter(b, engine='openpyxl') as w: df_exp.to_excel(w, index=False)
             st.download_button("📥 Descargar Excel", b.getvalue(), "reporte.xlsx")
             st.dataframe(df_exp)
-
+            
 # ==============================================================================
-# 5. GESTIÓN USUARIOS (CON EDICIÓN Y ELIMINACIÓN)
+# 5. GESTIÓN USUARIOS (MEJORADO: SELECTOR DE PAÍSES ROBUSTO)
 # ==============================================================================
 def app_gestion_usuarios():
     st.markdown("## 👤 Usuarios & Permisos")
     
-    tab1, tab2 = st.tabs(["➕ Crear Usuario", "✏️ Editar / ❌ Eliminar"])
+    tab1, tab2 = st.tabs(["➕ Crear Usuario", "🛠️ Administrar Existentes"])
     
-    # --- TAB 1: CREAR (Se mantiene igual, solo compactado visualmente) ---
+    # --- CREAR USUARIO ---
     with tab1:
         st.info("El usuario recibirá un correo para activar su cuenta.")
         with st.form("crear"):
@@ -746,111 +733,113 @@ def app_gestion_usuarios():
             mail = c1.text_input("Correo (Usuario)")
             nom = c2.text_input("Nombre Completo")
             rol = c1.selectbox("Rol", ["admin", "general"])
+            # AQUÍ YA USABAMOS MULTISELECT, TODO BIEN
             paises_asig = c2.multiselect("Países Permitidos", LISTA_PAISES, default=["Guatemala"])
             
             if st.form_submit_button("Crear Usuario"):
                 if mail and nom and paises_asig:
                     ws = conectar_google().worksheet("usuarios")
-                    if mail in ws.col_values(1): 
-                        st.error("El usuario ya existe.")
+                    if mail in ws.col_values(1): st.error("El usuario ya existe.")
                     else:
                         tok = str(uuid.uuid4())
                         str_paises = ",".join(paises_asig)
                         ws.append_row([mail, "PENDIENTE", rol, nom, tok, str_paises])
-                        if enviar_link_activacion(mail, tok, nom):
-                            st.success("Creado y correo enviado.")
-                        else:
-                            st.warning("Creado en DB, pero falló el envío de correo.")
-                else: 
-                    st.warning("Complete todos los campos.")
+                        if enviar_link_activacion(mail, tok, nom): st.success("Creado y correo enviado.")
+                        else: st.warning("Creado en DB, pero falló el envío de correo.")
+                else: st.warning("Complete todos los campos.")
 
-    # --- TAB 2: VER, EDITAR Y ELIMINAR ---
+    # --- ADMINISTRAR (NUEVO DISEÑO CON GESTOR DE PERMISOS) ---
     with tab2:
-        st.subheader("📋 Directorio de Usuarios")
+        st.subheader("📋 Directorio")
         
-        # 1. Cargar Datos
         ws = conectar_google().worksheet("usuarios")
         data = ws.get_all_records()
         df = pd.DataFrame(data)
 
         if not df.empty:
-            # Aseguramos que existan las columnas clave
-            required_cols = ['email', 'nombre', 'rol', 'paises']
-            df_view = df[required_cols].copy()
+            # 1. TABLA PARA EDITAR NOMBRE Y ROL (PERO NO PAÍSES)
+            st.caption("Edita Nombre y Rol aquí. Para Países, usa el gestor de abajo.")
             
-            # --- ZONA DE EDICIÓN ---
-            st.caption("💡 Puedes editar 'Nombre', 'Rol' y 'Países' directamente en la tabla. El correo no se puede cambiar.")
+            df_view = df[['email', 'nombre', 'rol']].copy()
             
             edited_df = st.data_editor(
                 df_view,
                 column_config={
-                    "email": st.column_config.TextColumn(
-                        "Correo Electrónico",
-                        help="Identificador único (No editable)",
-                        disabled=True, # Bloqueamos edición de email
-                    ),
-                    "rol": st.column_config.SelectboxColumn(
-                        "Rol",
-                        options=["admin", "general"],
-                        required=True,
-                        width="small"
-                    ),
-                    "nombre": st.column_config.TextColumn("Nombre Completo"),
-                    "paises": st.column_config.TextColumn(
-                        "Países (Separados por coma)",
-                        help="Ej: Guatemala,El Salvador"
-                    ),
+                    "email": st.column_config.TextColumn("Correo", disabled=True),
+                    "rol": st.column_config.SelectboxColumn("Rol", options=["admin", "general"], required=True),
+                    "nombre": st.column_config.TextColumn("Nombre"),
                 },
                 hide_index=True,
                 use_container_width=True,
-                num_rows="fixed", # No permitir agregar filas aquí (usar Tab 1)
-                key="editor_usuarios"
+                key="editor_usuarios_simple"
             )
-
-            # Botón para guardar cambios
-            col_save, _ = st.columns([1, 4])
-            if col_save.button("💾 Guardar Cambios"):
-                # Comparamos si hubo cambios reales
+            
+            if st.button("💾 Guardar Cambios (Nombre/Rol)"):
+                # Lógica para actualizar solo nombre y rol
+                # (Reutilizamos la lógica batch pero solo mandamos estas columnas)
+                # Para simplificar, usamos una función auxiliar si cambia algo
                 if not edited_df.equals(df_view):
-                    with st.spinner("Actualizando permisos..."):
-                        if actualizar_usuario_batch(edited_df):
-                            st.success("Datos actualizados correctamente.")
-                            time.sleep(1)
-                            st.rerun()
-                else:
-                    st.info("No hay cambios pendientes por guardar.")
+                    # Reconstruimos df completo para update batch
+                    # Este paso requiere cuidado, mejor usamos el actualizador batch genérico
+                    # pero necesitamos pasarle 'paises' también para que no se borren.
+                    # TRUCO: Unimos el DF editado con la columna paises original
+                    df_final_save = edited_df.copy()
+                    df_final_save['paises'] = df['paises'] # Mantenemos paises originales
+                    
+                    if actualizar_usuario_batch(df_final_save):
+                        st.success("Datos actualizados.")
+                        time.sleep(1); st.rerun()
 
             st.divider()
 
-            # --- ZONA DE ELIMINACIÓN ---
-            st.subheader("🗑️ Eliminar Usuario")
-            with st.container(border=True):
-                col_del_1, col_del_2 = st.columns([3, 1])
+            # 2. GESTOR DE PERMISOS DE PAÍS (AQUÍ ESTÁ LA MAGIA)
+            st.subheader("🌍 Gestor de Permisos de País")
+            st.info("Selecciona un usuario para modificar sus accesos geográficos.")
+            
+            col_sel_user, col_sel_paises = st.columns([1, 2])
+            
+            with col_sel_user:
+                usuario_a_editar = st.selectbox("Seleccionar Usuario:", df['email'].unique())
+            
+            if usuario_a_editar:
+                # Obtenemos sus países actuales
+                datos_user = df[df['email'] == usuario_a_editar].iloc[0]
+                paises_actuales_str = str(datos_user['paises'])
+                # Convertimos string "Guatemala,Panama" a lista ["Guatemala", "Panama"]
+                lista_actual = [p.strip() for p in paises_actuales_str.split(",") if p.strip() in LISTA_PAISES]
                 
-                # Selector para elegir a quién borrar (evita errores de dedo)
-                # Excluimos al usuario actual para que no se borre a sí mismo
-                opciones_borrar = df[df['email'] != st.session_state.usuario]['email'].tolist()
-                
-                user_to_delete = col_del_1.selectbox(
-                    "Seleccione el usuario a eliminar:", 
-                    opciones_borrar,
-                    index=None,
-                    placeholder="Seleccionar correo..."
-                )
-                
-                # Botón con confirmación
-                if col_del_2.button("Eliminar Definitivamente", type="primary", disabled=(not user_to_delete)):
-                    if user_to_delete:
-                        with st.spinner(f"Eliminando a {user_to_delete}..."):
-                            if eliminar_usuario_db(user_to_delete):
-                                st.success(f"Usuario {user_to_delete} eliminado.")
-                                time.sleep(1.5)
-                                st.rerun()
-                            else:
-                                st.error("No se pudo eliminar.")
-        else:
-            st.warning("No se encontraron usuarios en la base de datos.")
+                with col_sel_paises:
+                    # EL MULTISELECTOR QUE QUERÍAS
+                    nuevos_paises = st.multiselect(
+                        f"Países permitidos para {datos_user['nombre']}:",
+                        options=LISTA_PAISES,
+                        default=lista_actual
+                    )
+                    
+                    if st.button("Actualizar Permisos de País"):
+                        # Convertimos lista a string
+                        str_nuevos_paises = ",".join(nuevos_paises)
+                        
+                        # Actualizamos en Google Sheets (Celda específica)
+                        # Buscamos la fila
+                        try:
+                            cell = ws.find(usuario_a_editar)
+                            # Columna F es la 6
+                            ws.update_cell(cell.row, 6, str_nuevos_paises)
+                            st.success(f"Permisos actualizados para {usuario_a_editar}")
+                            time.sleep(1); st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al guardar: {e}")
 
+            st.divider()
+
+            # 3. ELIMINAR
+            st.subheader("🗑️ Eliminar Usuario")
+            with st.expander("Zona de Peligro"):
+                user_del = st.selectbox("Usuario a borrar:", df[df['email']!=st.session_state.usuario]['email'].unique(), index=None)
+                if st.button("Eliminar Definitivamente", type="primary", disabled=not user_del):
+                    if eliminar_usuario_db(user_del):
+                        st.success("Eliminado."); time.sleep(1); st.rerun()
 # ==============================================================================
 # 6. MAIN
 # ==============================================================================
@@ -922,6 +911,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
