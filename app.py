@@ -241,32 +241,43 @@ def actualizar_celda_sim(iccid, col, val):
         return True
     except: return False
 
-# --- CORRECCIÓN CRÍTICA DE FORMATO DE MONEDA ---
+# --- CORRECCIÓN DEFINITIVA MONEDA (FORMATO LATINO: 50,00) ---
 def limpiar_moneda(valor):
     """
-    Función robusta para convertir texto a número.
-    Prioriza el formato: 1,500.00 (Coma=Miles, Punto=Decimal)
+    Convierte texto a número asumiendo que la COMA es DECIMAL.
+    Ejemplo: "Q 50,00" -> 50.0
+    Ejemplo: "1.500,50" -> 1500.50
     """
-    # 1. Si está vacío o es nulo, es 0
+    # 1. Si es vacío o nulo, retorna 0
     if pd.isna(valor) or str(valor).strip() == "": 
         return 0.0
     
-    # 2. Si ya es número, aseguramos float
+    # 2. Si ya es número (int o float), lo devolvemos tal cual
     if isinstance(valor, (int, float)): 
         return float(valor)
     
-    # 3. Limpieza de texto
+    # 3. Limpieza de símbolos (Q, $, espacios)
     valor = str(valor).strip().upper()
     valor = valor.replace("Q", "").replace("$", "").replace(" ", "")
     
-    # 4. MANEJO DE SEPARADORES (CLAVE DEL ARREGLO)
-    # Si hay comas, asumimos que son miles y las BORRAMOS.
-    # Ejemplo: "1,500.50" -> "1500.50" (Python entiende esto perfecto)
-    # Ejemplo: "1,500" -> "1500"
-    if "," in valor:
-        valor = valor.replace(",", "")
+    # 4. LÓGICA DECIMAL (COMA ES DECIMAL)
+    
+    # Caso A: Tiene Puntos Y Comas (Ej: 1.500,00)
+    # En este formato, el punto separa miles (lo borramos) y la coma separa decimales (la volvemos punto)
+    if "." in valor and "," in valor:
+        valor = valor.replace(".", "")  # Borrar separador de miles
+        valor = valor.replace(",", ".") # Convertir coma decimal a punto Python
         
-    # Ahora el valor debería ser algo como "1500.50" o "1500"
+    # Caso B: Solo tiene Coma (Ej: 50,00)
+    # Asumimos que es decimal. La volvemos punto.
+    elif "," in valor:
+        valor = valor.replace(",", ".")
+        
+    # Caso C: Solo tiene Punto (Ej: 1500)
+    # Si escribieron 1.500 (mil quinientos), lo dejamos tal cual si es formato sin decimales.
+    # Pero si escribieron 50.00 (formato mixto), Python lo entenderá bien.
+    # Lo dejamos pasar.
+    
     try:
         return float(valor)
     except:
@@ -944,6 +955,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
