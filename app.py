@@ -449,14 +449,26 @@ def app_control_sim():
     clientes_db = obtener_lista_clientes()
 
     # --- DASHBOARD CRM ---
-    # --- DASHBOARD (CORREGIDO: TARJETAS GENERALES SIEMPRE VISIBLES) ---
+    # --- DASHBOARD ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
         
-        # 1. Carga de Datos y Seguridad
         df_raw = leer_datos("sims")
-        # Filtramos por país asignado
-        df = df_raw[df_raw['pais'].isin(paises_user)] if paises_user else df_raw
+        
+        # --- MODO DIOS (SOLO ADMIN) ---
+        # Permite ver todo ignorando los filtros de país
+        if st.session_state.rol == 'admin':
+            ver_todo = st.checkbox("👁️ Ver Inventario Global (Ignorar mis países asignados)")
+            if ver_todo:
+                df = df_raw # Usamos la data cruda sin filtrar
+            else:
+                # Usamos el filtro normal
+                df = df_raw[df_raw['pais'].isin(paises_user)] if paises_user else df_raw
+        else:
+            # Usuarios normales siempre tienen filtro
+            df = df_raw[df_raw['pais'].isin(paises_user)] if paises_user else df_raw
+        
+        # ... (aquí sigue el resto de tu código de tarjetas) ...
         
         if not df.empty and 'estado' in df.columns:
             
@@ -744,5 +756,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
