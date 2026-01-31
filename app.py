@@ -69,7 +69,6 @@ def conectar_google():
         else:
             st.error(f"Error conectando a Google: {e}")
             st.stop()
-
 # --- EMAILS ---
 def enviar_correo_sistema(email_destino, asunto, mensaje_html):
     try:
@@ -185,7 +184,7 @@ def eliminar_usuario_db(email_a_borrar):
         return False
 
 # ==============================================================================
-# 3. LÓGICA DE NEGOCIO SIMS
+# 3. LÓGICA DE NEGOCIO SIMS (AQUÍ ESTÁ LA CORRECCIÓN DE MONEDA)
 # ==============================================================================
 
 @st.cache_data(ttl=10)
@@ -215,7 +214,6 @@ def actualizar_sim_completa(iccid, datos_dict):
     try:
         cell = worksheet.find(str(iccid))
         r = cell.row
-        # Mapeo de columnas (B=2, C=3...)
         vals = [
             {'range': f'B{r}', 'values': [[datos_dict['numero_linea']]]},
             {'range': f'C{r}', 'values': [[datos_dict['cliente']]]},
@@ -243,11 +241,36 @@ def actualizar_celda_sim(iccid, col, val):
         return True
     except: return False
 
-def limpiar_moneda(v):
-    if isinstance(v, (int, float)): return float(v)
-    v = str(v).strip().replace("Q","").replace("$","").replace(",","")
-    try: return float(v)
-    except: return 0.0
+# --- CORRECCIÓN CRÍTICA DE FORMATO DE MONEDA ---
+def limpiar_moneda(valor):
+    """
+    Función robusta para convertir texto a número.
+    Prioriza el formato: 1,500.00 (Coma=Miles, Punto=Decimal)
+    """
+    # 1. Si está vacío o es nulo, es 0
+    if pd.isna(valor) or str(valor).strip() == "": 
+        return 0.0
+    
+    # 2. Si ya es número, aseguramos float
+    if isinstance(valor, (int, float)): 
+        return float(valor)
+    
+    # 3. Limpieza de texto
+    valor = str(valor).strip().upper()
+    valor = valor.replace("Q", "").replace("$", "").replace(" ", "")
+    
+    # 4. MANEJO DE SEPARADORES (CLAVE DEL ARREGLO)
+    # Si hay comas, asumimos que son miles y las BORRAMOS.
+    # Ejemplo: "1,500.50" -> "1500.50" (Python entiende esto perfecto)
+    # Ejemplo: "1,500" -> "1500"
+    if "," in valor:
+        valor = valor.replace(",", "")
+        
+    # Ahora el valor debería ser algo como "1500.50" o "1500"
+    try:
+        return float(valor)
+    except:
+        return 0.0
 
 def registrar_sim(datos, usuario):
     df = leer_datos("sims")
@@ -256,14 +279,17 @@ def registrar_sim(datos, usuario):
     c = str(datos['cliente']) if datos['cliente'] else ""
     e = "Activa" if l and c else "Botiquin"
     f = obtener_hora_actual()
+    # Aplicamos limpieza antes de guardar
+    c_q = limpiar_moneda(datos['costo_q'])
+    c_d = limpiar_moneda(datos['costo_d'])
+    
     fila = [str(datos['iccid']), l, c, str(datos['placa']), str(datos['imei']),
-            str(datos['tipo_plan']), str(datos['pais']), datos['costo_q'], datos['costo_d'], e, f]
+            str(datos['tipo_plan']), str(datos['pais']), c_q, c_d, e, f]
     escribir_fila("sims", fila)
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"Estado: {e}", usuario, f])
     return True
 
 def procesar_carga_masiva_turbo(df_limpio, usuario):
-    # (Misma lógica anterior para creación)
     df_limpio = df_limpio.fillna("")
     df_limpio['iccid'] = df_limpio['iccid'].astype(str).str.replace(".0", "", regex=False)
     df_db = leer_datos("sims")
@@ -280,8 +306,13 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
         
         l, cli = str(row['numero_linea']).replace(".0",""), str(row['cliente'])
         est = "Activa" if l and cli else "Botiquin"
+        
+        # APLICAMOS LA CORRECCIÓN DE MONEDA AQUÍ
+        val_q = limpiar_moneda(row['costo_q'])
+        val_d = limpiar_moneda(row['costo_d'])
+        
         fila = [ic, l, cli, str(row['placa']), str(row['imei']), str(row['tipo_plan']), 
-                str(row['pais']), limpiar_moneda(row['costo_q']), limpiar_moneda(row['costo_d']), est, hoy]
+                str(row['pais']), val_q, val_d, est, hoy]
         nuevas.append(fila)
         hist.append([ic, "Creacion Masiva", f"Estado: {est}", usuario, hoy])
         existentes.add(ic)
@@ -291,6 +322,8 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
         escribir_lote("sims", nuevas)
         escribir_lote("historial", hist)
     return c, d
+
+# ... (El resto del código de procesar_actualizacion_masiva y demás sigue igual)
 
 # --- NUEVA FUNCIÓN: ACTUALIZACIÓN MASIVA (Edición) ---
 def procesar_actualizacion_masiva(df_updates, usuario, solo_vacios=True):
@@ -911,6 +944,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
