@@ -383,52 +383,152 @@ def app_gestion_clientes():
     with t2:
         st.dataframe(leer_datos("clientes"), use_container_width=True)
 
+# ==============================================================================
+# 5. GESTIÓN USUARIOS (VERSIÓN "PANEL AMIGABLE 360")
+# ==============================================================================
 def app_gestion_usuarios():
-    st.subheader("👤 Usuarios & Permisos")
-    t1, t2 = st.tabs(["Crear", "Administrar"])
-    with t1:
-        with st.form("c_u"):
-            c1, c2 = st.columns(2)
-            em = c1.text_input("Correo")
-            nm = c2.text_input("Nombre")
-            rl = c1.selectbox("Rol", ["admin", "general"])
-            pa = c2.multiselect("Países", LISTA_PAISES, default=["Guatemala"])
-            if st.form_submit_button("Crear"):
-                ws = conectar_google().worksheet("usuarios")
-                if em in ws.col_values(1): st.error("Existe")
-                else:
-                    tk = str(uuid.uuid4())
-                    ws.append_row([em, "PENDIENTE", rl, nm, tk, ",".join(pa)])
-                    enviar_link_activacion(em, tk, nm)
-                    st.success("Creado")
-    with t2:
-        df = pd.DataFrame(conectar_google().worksheet("usuarios").get_all_records())
-        if not df.empty:
-            st.caption("Edita Nombre/Rol aquí. Para Países usa el gestor de abajo.")
-            df_v = df[['email', 'nombre', 'rol']].copy()
-            ed_df = st.data_editor(df_v, column_config={"email": st.column_config.TextColumn(disabled=True)}, hide_index=True, use_container_width=True)
-            
-            if st.button("Guardar Cambios (Nombre/Rol)"):
-                save_df = ed_df.copy()
-                save_df['paises'] = df['paises']
-                if actualizar_usuario_batch(save_df): st.success("Guardado"); time.sleep(1); st.rerun()
-            
-            st.divider(); st.subheader("🌍 Permisos de País")
-            u_sel = st.selectbox("Usuario:", df['email'].unique())
-            if u_sel:
-                curr_p = [p.strip() for p in str(df[df['email']==u_sel].iloc[0]['paises']).split(",") if p.strip()]
-                new_p = st.multiselect(f"Países para {u_sel}", LISTA_PAISES, default=[x for x in curr_p if x in LISTA_PAISES])
-                if st.button("Actualizar Países"):
-                    ws = conectar_google().worksheet("usuarios")
-                    cell = ws.find(u_sel)
-                    ws.update_cell(cell.row, 6, ",".join(new_p))
-                    st.success("Actualizado"); time.sleep(1); st.rerun()
-            
-            st.divider(); st.subheader("🗑️ Eliminar")
-            d_u = st.selectbox("Borrar:", df[df['email']!=st.session_state.usuario]['email'].unique(), index=None)
-            if st.button("Eliminar", type="primary", disabled=not d_u):
-                eliminar_usuario_db(d_u); st.success("Eliminado"); time.sleep(1); st.rerun()
+    st.header("👤 Administración de Usuarios")
+    
+    # Estilo CSS para separar visualmente las zonas
+    st.markdown("""
+        <style>
+        .stSelectbox {margin-bottom: 20px;}
+        div[data-testid="stForm"] {border: 1px solid #e0e0e0; padding: 20px; border-radius: 10px;}
+        </style>
+    """, unsafe_allow_html=True)
 
+    tab_crear, tab_gestionar = st.tabs(["➕ Crear Nuevo Usuario", "⚙️ Gestionar Existentes"])
+    
+    # --- TAB 1: CREAR (OPTIMIZADO) ---
+    with tab_crear:
+        st.markdown("#### Alta de Nuevo Colaborador")
+        st.info("💡 El sistema enviará un correo automático con el enlace de activación.")
+        
+        with st.form("form_crear_usuario", clear_on_submit=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                new_email = st.text_input("📧 Correo Electrónico (Será su usuario)")
+                new_nombre = st.text_input("👤 Nombre Completo")
+            with col_b:
+                new_rol = st.radio("Nivel de Acceso", ["general", "admin"], horizontal=True, 
+                                   captions=["Ver y Reportar", "Control Total"])
+                new_paises = st.multiselect("🌍 Países Permitidos", LISTA_PAISES, default=["Guatemala"])
+            
+            st.markdown("---")
+            if st.form_submit_button("✨ Crear Usuario", type="primary"):
+                ws = conectar_google().worksheet("usuarios")
+                if new_email and new_nombre and new_paises:
+                    if new_email in ws.col_values(1):
+                        st.error("⚠️ Este correo ya está registrado.")
+                    else:
+                        token = str(uuid.uuid4())
+                        paises_str = ",".join(new_paises)
+                        # Orden: email, pass, rol, nombre, token, paises
+                        ws.append_row([new_email, "PENDIENTE", new_rol, new_nombre, token, paises_str])
+                        
+                        with st.spinner("Enviando invitación..."):
+                            if enviar_link_activacion(new_email, token, new_nombre):
+                                st.balloons()
+                                st.success(f"✅ Usuario {new_nombre} creado y notificado exitosamente.")
+                            else:
+                                st.warning("Usuario creado, pero hubo un error enviando el correo.")
+                else:
+                    st.error("Por favor completa todos los campos obligatorios.")
+
+    # --- TAB 2: GESTIONAR (LA GRAN MEJORA INTERFAZ 360) ---
+    with tab_gestionar:
+        ws = conectar_google().worksheet("usuarios")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+
+        if not df.empty:
+            # 1. SELECTOR PRINCIPAL (Buscador)
+            st.markdown("#### 🔍 Buscar Usuario a Editar")
+            col_search, _ = st.columns([2, 1])
+            
+            # Creamos una lista amigable: "Nombre (Correo)"
+            opciones_usuarios = [f"{row['nombre']} ({row['email']})" for i, row in df.iterrows()]
+            seleccion = col_search.selectbox("Seleccione un usuario de la lista:", opciones_usuarios, index=None, placeholder="Escribe para buscar...")
+
+            if seleccion:
+                # Extraemos el email del string seleccionado "Nombre (email)"
+                email_sel = seleccion.split("(")[-1].replace(")", "")
+                user_data = df[df['email'] == email_sel].iloc[0]
+
+                # 2. FICHA DE EDICIÓN (CONTAINER VISUAL)
+                st.divider()
+                st.subheader(f"✏️ Editando a: {user_data['nombre']}")
+                
+                with st.container(border=True):
+                    # Usamos un FORMULARIO para que sea fácil guardar todo junto
+                    with st.form("form_edicion"):
+                        c1, c2 = st.columns(2)
+                        
+                        with c1:
+                            st.caption("🔒 Identificación (No editable)")
+                            st.text_input("Correo", value=user_data['email'], disabled=True)
+                            
+                            st.caption("👤 Datos Personales")
+                            edit_nombre = st.text_input("Nombre Completo", value=user_data['nombre'])
+
+                        with c2:
+                            st.caption("🔑 Nivel de Permisos")
+                            # Índice del rol actual
+                            idx_rol = 0 if user_data['rol'] == 'general' else 1
+                            edit_rol = st.radio("Rol del Sistema", ["general", "admin"], index=idx_rol, horizontal=True)
+                            
+                            st.caption("🌍 Acceso Geográfico")
+                            # Convertimos string "Guatemala,Mexico" a lista
+                            paises_actuales = [p.strip() for p in str(user_data['paises']).split(",") if p.strip() in LISTA_PAISES]
+                            edit_paises = st.multiselect("Países Asignados", LISTA_PAISES, default=paises_actuales)
+
+                        st.markdown("---")
+                        col_save, col_spacer = st.columns([1, 3])
+                        if col_save.form_submit_button("💾 Guardar Cambios", type="primary"):
+                            # LOGICA DE GUARDADO
+                            try:
+                                cell = ws.find(email_sel)
+                                r = cell.row
+                                # Actualizamos columnas C(3)=Rol, D(4)=Nombre, F(6)=Paises
+                                updates = [
+                                    {'range': f'C{r}', 'values': [[edit_rol]]},
+                                    {'range': f'D{r}', 'values': [[edit_nombre]]},
+                                    {'range': f'F{r}', 'values': [[",".join(edit_paises)]]}
+                                ]
+                                ws.batch_update(updates)
+                                st.success("✅ Datos actualizados correctamente.")
+                                time.sleep(1.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al guardar: {e}")
+
+                # 3. ZONA DE PELIGRO (FUERA DEL FORMULARIO)
+                st.markdown("### 🚫 Zona de Riesgo")
+                with st.expander(f"Eliminar cuenta de {user_data['nombre']}", expanded=False):
+                    st.warning("Esta acción es irreversible. El usuario perderá acceso inmediato al sistema.")
+                    
+                    # Verificación de seguridad para no borrarse a uno mismo
+                    if email_sel == st.session_state.usuario:
+                        st.error("⛔ No puedes eliminar tu propia cuenta mientras estás logueado.")
+                    else:
+                        col_confirm, col_btn_del = st.columns([3, 1])
+                        check_del = col_confirm.checkbox("Entiendo, quiero eliminar este usuario permanentemente.")
+                        
+                        if col_btn_del.button("🔥 Eliminar Usuario"):
+                            if check_del:
+                                with st.spinner("Eliminando..."):
+                                    if eliminar_usuario_db(email_sel):
+                                        st.success("Usuario eliminado.")
+                                        time.sleep(1.5)
+                                        st.rerun()
+                            else:
+                                st.info("Debes marcar la casilla para confirmar.")
+            
+            else:
+                # Mensaje cuando no hay selección
+                st.info("👆 Selecciona un usuario arriba para ver su ficha de detalles.")
+        else:
+            st.warning("No hay usuarios registrados en la base de datos.")
 def app_control_sim():
     # Setup de permisos
     paises_user = st.session_state.get('paises_asignados', [])
@@ -756,6 +856,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
