@@ -443,58 +443,98 @@ def app_control_sim():
     clientes_db = obtener_lista_clientes()
 
     # --- DASHBOARD CRM ---
+    # --- DASHBOARD (CORREGIDO: TARJETAS GENERALES SIEMPRE VISIBLES) ---
     if choice == "Dashboard":
-        st.title("📊 Tablero")
+        st.title("📊 Tablero de Control")
+        
+        # 1. Carga de Datos y Seguridad
         df_raw = leer_datos("sims")
+        # Filtramos por país asignado
         df = df_raw[df_raw['pais'].isin(paises_user)] if paises_user else df_raw
         
         if not df.empty and 'estado' in df.columns:
-            t1, t2 = st.tabs(["🌍 Global", "🏢 CRM Cliente"])
+            
+            # --- ZONA 1: TARJETAS GENERALES (SIEMPRE ARRIBA) ---
+            # Esto es lo que "venía mostrando" antes
+            st.markdown("### Resumen General")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Inventario", len(df), border=True)
+            c2.metric("Activas", len(df[df['estado']=='Activa']), border=True)
+            c3.metric("Botiquín (Stock)", len(df[df['estado']=='Botiquin']), border=True)
+            c4.metric("Bajas / Canceladas", len(df[df['estado']=='Cancelada']), border=True)
+            
+            st.markdown("---")
+            
+            # --- ZONA 2: DETALLES (PESTAÑAS) ---
+            t1, t2 = st.tabs(["🌍 Análisis Geográfico y Financiero", "🏢 CRM por Cliente"])
+            
+            # Pestaña 1: Gráficos y Dinero
             with t1:
-                c1,c2,c3,c4 = st.columns(4)
-                c1.metric("Total", len(df))
-                c2.metric("Activas", len(df[df['estado']=='Activa']))
-                c3.metric("Botiquín", len(df[df['estado']=='Botiquin']))
-                c4.metric("Canceladas", len(df[df['estado']=='Cancelada']))
-                st.markdown("---")
+                st.subheader("Distribución por País")
                 if 'pais' in df.columns:
                     cp = df['pais'].value_counts().reset_index()
-                    cp.columns = ["País", "Cant"]
-                    ga, gb = st.columns([2,1])
-                    with ga: st.bar_chart(cp.set_index("País"))
-                    with gb: st.dataframe(cp, hide_index=True, use_container_width=True)
+                    cp.columns = ["País", "Cantidad"]
+                    
+                    ga, gb = st.columns([2, 1])
+                    with ga: 
+                        st.bar_chart(cp.set_index("País"))
+                    with gb: 
+                        st.dataframe(
+                            cp, 
+                            hide_index=True, 
+                            use_container_width=True,
+                            column_config={"Cantidad": st.column_config.ProgressColumn("Volumen", format="%d", min_value=0, max_value=int(cp['Cantidad'].max()))}
+                        )
                 
+                # Sección Financiera (Solo Admin)
                 if st.session_state.rol == 'admin':
-                    st.markdown("---")
-                    st.subheader("💰 Finanzas")
+                    st.divider()
+                    st.subheader("💰 Facturación Estimada (Mensual)")
+                    # Calculamos totales
                     df['cq'] = df['costo_q'].apply(limpiar_moneda)
                     df['cd'] = df['costo_d'].apply(limpiar_moneda)
                     act = df[df['estado']=='Activa']
-                    k1, k2 = st.columns(2)
-                    k1.metric("Q", f"Q {act['cq'].sum():,.2f}")
-                    k2.metric("$", f"$ {act['cd'].sum():,.2f}")
+                    
+                    f1, f2 = st.columns(2)
+                    f1.metric("Total Quetzales (Q)", f"Q {act['cq'].sum():,.2f}", delta="Mensual", border=True)
+                    f2.metric("Total Dólares ($)", f"$ {act['cd'].sum():,.2f}", delta="Mensual", border=True)
 
+            # Pestaña 2: Buscador de Clientes (CRM)
             with t2:
-                st.subheader("Análisis por Cliente")
+                st.subheader("Análisis Individual por Cliente")
+                # Unimos clientes de DB con los que ya tienen SIMs
                 all_cl = sorted(list(set(clientes_db + df['cliente'].unique().tolist())))
-                c_sel = st.selectbox("Cliente:", all_cl, index=None, placeholder="Buscar...")
+                
+                c_sel = st.selectbox("Seleccione Cliente:", all_cl, index=None, placeholder="Buscar empresa...")
+                
                 if c_sel:
                     df_c = df[df['cliente']==c_sel]
                     if not df_c.empty:
+                        # Cálculo de Traslados para este cliente
                         df_h = leer_datos("historial")
                         tras = 0
                         if not df_h.empty:
                             ics = df_c['iccid'].astype(str).tolist()
                             tras = len(df_h[(df_h['ID'].astype(str).isin(ics)) & (df_h['Acción'].str.contains("Traslado", na=False))])
                         
+                        # KPIs específicos del cliente
                         k1, k2, k3, k4 = st.columns(4)
-                        k1.metric("Activas", len(df_c[df_c['estado']=='Activa']), border=True)
-                        k2.metric("Botiquín", len(df_c[df_c['estado']=='Botiquin']), border=True)
-                        k3.metric("Bajas", len(df_c[df_c['estado']=='Cancelada']), border=True)
-                        k4.metric("Traslados", tras, border=True)
-                        st.dataframe(df_c[['iccid','numero_linea','placa','estado','pais']], use_container_width=True, hide_index=True)
-                    else: st.warning("Sin SIMs asignadas.")
-
+                        k1.metric("Líneas Activas", len(df_c[df_c['estado']=='Activa']))
+                        k2.metric("Stock (Botiquín)", len(df_c[df_c['estado']=='Botiquin']))
+                        k3.metric("Canceladas", len(df_c[df_c['estado']=='Cancelada']))
+                        k4.metric("Traslados Históricos", tras, help="Veces que se han cambiado SIMs de este cliente")
+                        
+                        st.divider()
+                        st.caption(f"Inventario detallado de {c_sel}")
+                        st.dataframe(
+                            df_c[['iccid','numero_linea','placa','estado','pais', 'tipo_plan']], 
+                            use_container_width=True, 
+                            hide_index=True
+                        )
+                    else: 
+                        st.warning("Este cliente está registrado en la lista, pero NO tiene SIMs asignadas actualmente.")
+        else:
+            st.info("No hay datos para mostrar en este momento.")
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador")
         df = leer_datos("sims")
@@ -698,3 +738,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
