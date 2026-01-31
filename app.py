@@ -467,7 +467,7 @@ def app_control_sim():
                 pla = c2.text_input("Placa", key=f"p_{kf}")
                 ime = c1.text_input("IMEI", key=f"im_{kf}")
                 plan = c2.text_input("Plan", key=f"pl_{kf}")
-                pais = c1.selectbox("País", ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Colombia", "Ecuador"], key=f"pa_{kf}")
+                pais = c1.selectbox("País", ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Colombia", "Ecuador", "República Dominicana"], key=f"pa_{kf}")
                 cq = c2.number_input("Costo Q", key=f"cq_{kf}")
                 cd = c1.number_input("Costo $", key=f"cd_{kf}")
                 if st.form_submit_button("Guardar"):
@@ -548,7 +548,7 @@ def app_control_sim():
                     np = c1.text_input("Placa", value=cur['placa'])
                     ni = c2.text_input("IMEI", value=cur['imei'])
                     npl = c1.text_input("Plan", value=cur['tipo_plan'])
-                    paises = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá",  "Colombia", "Ecuador" ]
+                    paises = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá",  "Colombia", "Ecuador", "República Dominicana" ]
                     try: idx = paises.index(cur['pais'])
                     except: idx = 0
                     npa = c2.selectbox("País", paises, index=idx)
@@ -780,6 +780,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
