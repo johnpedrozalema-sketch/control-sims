@@ -124,8 +124,38 @@ def gestionar_reset_password():
 # 3. LÓGICA DE NEGOCIO (DATOS, SIMS, CLIENTES)
 # ==============================================================================
 
+# --- FUNCION CRÍTICA DE LIMPIEZA DE MONEDA ---
+# (Movida al inicio para que leer_datos pueda usarla)
+def limpiar_moneda(valor):
+    """
+    Convierte texto a número asumiendo formato latino o mixto.
+    Ej: "Q 50,00" -> 50.00
+    Ej: "1.500,00" -> 1500.00
+    """
+    if pd.isna(valor) or str(valor).strip() == "": return 0.0
+    if isinstance(valor, (int, float)): return float(valor)
+    
+    # 1. Quitar símbolos
+    valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
+    
+    # 2. Manejo inteligente de puntos y comas
+    if "." in valor and "," in valor: 
+        # Formato complejo: 1.500,00
+        valor = valor.replace(".", "").replace(",", ".")
+    elif "," in valor:
+        # Formato decimal simple: 50,00
+        valor = valor.replace(",", ".")
+    
+    try: return float(valor)
+    except: return 0.0
+
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
+    """
+    FUNCIÓN BLINDADA V4:
+    - Limpieza de textos y espacios.
+    - Limpieza de Moneda INTEGRADA (Arregla el bug de costos en 0).
+    """
     try:
         sheet = conectar_google()
         worksheet = sheet.worksheet(pestaña)
@@ -140,10 +170,10 @@ def leer_datos(pestaña):
 
         df = pd.DataFrame(data)
 
-        # 1. Convertir todo a texto y quitar espacios
+        # 1. Convertir todo a texto inicial y quitar espacios
         df = df.astype(str).apply(lambda x: x.str.strip())
 
-        # 2. Limpieza de ICCID (.0 y notación científica)
+        # 2. Limpieza de ICCID
         if 'iccid' in df.columns:
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
             df['iccid'] = df['iccid'].replace('nan', '')
@@ -153,11 +183,12 @@ def leer_datos(pestaña):
             df['pais'] = df['pais'].replace('nan', '')
             df['pais'] = df['pais'].str.title()
 
-        # 4. Restaurar Costos
+        # 4. LIMPIEZA Y RESTAURACIÓN DE COSTOS (AQUÍ ESTABA EL ERROR ANTES)
+        # Ahora usamos limpiar_moneda() en lugar de to_numeric() directo
         if 'costo_q' in df.columns:
-            df['costo_q'] = pd.to_numeric(df['costo_q'], errors='coerce').fillna(0)
+            df['costo_q'] = df['costo_q'].apply(limpiar_moneda)
         if 'costo_d' in df.columns:
-            df['costo_d'] = pd.to_numeric(df['costo_d'], errors='coerce').fillna(0)
+            df['costo_d'] = df['costo_d'].apply(limpiar_moneda)
 
         return df
 
@@ -174,17 +205,6 @@ def escribir_fila(pestaña, fila):
 def escribir_lote(pestaña, filas):
     if filas: conectar_google().worksheet(pestaña).append_rows(filas)
     limpiar_cache()
-
-def limpiar_moneda(valor):
-    if pd.isna(valor) or str(valor).strip() == "": return 0.0
-    if isinstance(valor, (int, float)): return float(valor)
-    valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
-    if "." in valor and "," in valor: 
-        valor = valor.replace(".", "").replace(",", ".")
-    elif "," in valor:
-        valor = valor.replace(",", ".")
-    try: return float(valor)
-    except: return 0.0
 
 # --- LÓGICA CLIENTES ---
 def obtener_lista_clientes():
@@ -502,12 +522,11 @@ def app_control_sim():
                     with gb: st.dataframe(cp, hide_index=True, use_container_width=True, column_config={"Cantidad": st.column_config.ProgressColumn("Volumen", format="%d", min_value=0, max_value=int(cp['Cantidad'].max()))})
                 if st.session_state.rol == 'admin':
                     st.divider(); st.subheader("💰 Finanzas")
-                    df['cq'] = df['costo_q'].apply(limpiar_moneda)
-                    df['cd'] = df['costo_d'].apply(limpiar_moneda)
+                    # No necesitamos limpiar_moneda aquí, ya viene limpio de leer_datos()
                     act = df[df['estado']=='Activa']
                     k1, k2 = st.columns(2)
-                    k1.metric("Total Q", f"Q {act['cq'].sum():,.2f}", border=True)
-                    k2.metric("Total $", f"$ {act['cd'].sum():,.2f}", border=True)
+                    k1.metric("Total Q", f"Q {act['costo_q'].sum():,.2f}", border=True)
+                    k2.metric("Total $", f"$ {act['costo_d'].sum():,.2f}", border=True)
             with t2:
                 st.subheader("Análisis por Cliente")
                 all_cl = sorted(list(set(clientes_db + df['cliente'].unique().tolist())))
@@ -534,22 +553,15 @@ def app_control_sim():
                 c1, c2 = st.columns([1,6])
                 with c1: st.header("✅" if est=="Activa" else "📦" if est=="Botiquin" else "🚫")
                 with c2: st.subheader(f"{est}"); st.write(f"**Línea:** {row['numero_linea']}")
-                
-                # --- AQUÍ ESTÁ EL CAMBIO SOLICITADO: PLACA E IMEI EN LA FICHA ---
-                st.markdown("### 📋 Ficha Técnica")
                 with st.container(border=True):
-                    # Fila 1
                     k1,k2,k3=st.columns(3)
                     k1.write(f"**ICCID:** {ic}")
                     k2.write(f"**Cliente:** {row['cliente']}")
                     k3.write(f"**País:** {row['pais']}")
-                    
                     st.divider()
-                    
-                    # Fila 2
                     k4,k5,k6=st.columns(3)
                     k4.write(f"**Placa:** {row['placa']}")
-                    k5.write(f"**IMEI:** {row['imei']}")
+                    k5.write(f"**IMEI:** {row['imei']}") # IMEI AGREGADO
                     k6.write(f"**Plan:** {row['tipo_plan']}")
 
     elif choice == "Registrar SIM":
@@ -610,17 +622,18 @@ def app_control_sim():
                             else: nc = c2.text_input("Cliente", value=cur['cliente'])
                             
                             np = c1.text_input("Placa", value=cur['placa'])
+                            nimei = c2.text_input("IMEI", value=cur['imei']) # IMEI AGREGADO
                             
-                            # --- AQUÍ ESTÁ EL CAMBIO SOLICITADO: AGREGAR CAMPO IMEI ---
-                            nimei = c2.text_input("IMEI", value=cur['imei'])
                             npl = c1.text_input("Plan", value=cur['tipo_plan'])
                             
                             lpe = [p for p in LISTA_PAISES if p in paises_user] if paises_user else LISTA_PAISES
                             idx_p = lpe.index(cur['pais']) if cur['pais'] in lpe else 0
                             npa = c1.selectbox("País", lpe, index=idx_p, help="Si decía 'PENDIENTE', asigna ahora el país correcto.")
                             
-                            ncq = c2.number_input("Costo Q", value=limpiar_moneda(cur['costo_q']))
-                            ncd = c1.number_input("Costo $", value=limpiar_moneda(cur['costo_d']))
+                            # Al usar leer_datos mejorado, los costos ya son floats limpios.
+                            # Usamos float() para asegurar el tipo en number_input
+                            ncq = c2.number_input("Costo Q", value=float(cur['costo_q']))
+                            ncd = c1.number_input("Costo $", value=float(cur['costo_d']))
                             
                             if st.form_submit_button("Actualizar"):
                                 ch = []
@@ -680,8 +693,8 @@ def app_control_sim():
             if st.session_state.rol != 'admin': df_exp = df_exp.drop(columns=['costo_q','costo_d'], errors='ignore')
             else:
                  try:
-                    df_exp['costo_q'] = df_exp['costo_q'].apply(lambda x: f"Q {float(limpiar_moneda(x)):,.2f}")
-                    df_exp['costo_d'] = df_exp['costo_d'].apply(lambda x: f"$ {float(limpiar_moneda(x)):,.2f}")
+                    df_exp['costo_q'] = df_exp['costo_q'].apply(lambda x: f"Q {float(x):,.2f}")
+                    df_exp['costo_d'] = df_exp['costo_d'].apply(lambda x: f"$ {float(x):,.2f}")
                  except: pass
             b = io.BytesIO()
             with pd.ExcelWriter(b, engine='openpyxl') as w: df_exp.to_excel(w, index=False)
