@@ -126,9 +126,6 @@ def gestionar_reset_password():
 
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
-    """
-    FUNCIÓN BLINDADA V3: Normalización para búsqueda y lectura.
-    """
     try:
         sheet = conectar_google()
         worksheet = sheet.worksheet(pestaña)
@@ -151,10 +148,10 @@ def leer_datos(pestaña):
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
             df['iccid'] = df['iccid'].replace('nan', '')
 
-        # 3. Limpieza de País (Solo formato, no reemplazo de vacíos aún)
+        # 3. Limpieza de País
         if 'pais' in df.columns:
-            df['pais'] = df['pais'].replace('nan', '') # Asegurar que NaN sea vacío
-            df['pais'] = df['pais'].str.title() # Guatemala vs guatemala
+            df['pais'] = df['pais'].replace('nan', '')
+            df['pais'] = df['pais'].str.title()
 
         # 4. Restaurar Costos
         if 'costo_q' in df.columns:
@@ -179,7 +176,6 @@ def escribir_lote(pestaña, filas):
     limpiar_cache()
 
 def limpiar_moneda(valor):
-    """Corrección moneda latina: 50,00 -> 50.00"""
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     if isinstance(valor, (int, float)): return float(valor)
     valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
@@ -469,7 +465,7 @@ def app_control_sim():
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
     clientes_db = obtener_lista_clientes()
 
-    # --- LÓGICA DE CARGA Y FILTRO (CORREGIDA) ---
+    # --- LÓGICA DE CARGA Y FILTRO ---
     df_raw = leer_datos("sims")
     
     # 1. Normalizar vacíos a PENDIENTE
@@ -479,12 +475,10 @@ def app_control_sim():
 
     # 2. Aplicar Filtro: Mis países OR Pendientes
     if paises_user:
-        # Si la lista no está vacía (Usuario Normal o Admin Limitado)
         df = df_raw[ (df_raw['pais'].isin(paises_user)) | (df_raw['pais'] == "PENDIENTE ⚠️") ]
     else:
-        # Si la lista está vacía
-        if st.session_state.rol == 'admin': df = df_raw # Admin Global ve todo
-        else: df = pd.DataFrame(columns=df_raw.columns) # General sin acceso
+        if st.session_state.rol == 'admin': df = df_raw 
+        else: df = pd.DataFrame(columns=df_raw.columns)
 
     # --- PANTALLAS ---
     if choice == "Dashboard":
@@ -540,8 +534,23 @@ def app_control_sim():
                 c1, c2 = st.columns([1,6])
                 with c1: st.header("✅" if est=="Activa" else "📦" if est=="Botiquin" else "🚫")
                 with c2: st.subheader(f"{est}"); st.write(f"**Línea:** {row['numero_linea']}")
+                
+                # --- AQUÍ ESTÁ EL CAMBIO SOLICITADO: PLACA E IMEI EN LA FICHA ---
+                st.markdown("### 📋 Ficha Técnica")
                 with st.container(border=True):
-                    k1,k2,k3=st.columns(3); k1.write(f"**ICCID:** {ic}"); k2.write(f"**Cliente:** {row['cliente']}"); k3.write(f"**País:** {row['pais']}")
+                    # Fila 1
+                    k1,k2,k3=st.columns(3)
+                    k1.write(f"**ICCID:** {ic}")
+                    k2.write(f"**Cliente:** {row['cliente']}")
+                    k3.write(f"**País:** {row['pais']}")
+                    
+                    st.divider()
+                    
+                    # Fila 2
+                    k4,k5,k6=st.columns(3)
+                    k4.write(f"**Placa:** {row['placa']}")
+                    k5.write(f"**IMEI:** {row['imei']}")
+                    k6.write(f"**Plan:** {row['tipo_plan']}")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Registrar")
@@ -599,12 +608,14 @@ def app_control_sim():
                             if str(cur['cliente']) in clientes_db: idx_c = clientes_db.index(str(cur['cliente']))
                             if clientes_db: nc = c2.selectbox("Cliente", clientes_db, index=idx_c)
                             else: nc = c2.text_input("Cliente", value=cur['cliente'])
-                            np = c1.text_input("Placa", value=cur['placa'])
-                            npl = c2.text_input("Plan", value=cur['tipo_plan'])
                             
-                            # Logica para seleccionar País incluso si es "PENDIENTE"
+                            np = c1.text_input("Placa", value=cur['placa'])
+                            
+                            # --- AQUÍ ESTÁ EL CAMBIO SOLICITADO: AGREGAR CAMPO IMEI ---
+                            nimei = c2.text_input("IMEI", value=cur['imei'])
+                            npl = c1.text_input("Plan", value=cur['tipo_plan'])
+                            
                             lpe = [p for p in LISTA_PAISES if p in paises_user] if paises_user else LISTA_PAISES
-                            # Si el país actual es PENDIENTE o no está en la lista, index=0
                             idx_p = lpe.index(cur['pais']) if cur['pais'] in lpe else 0
                             npa = c1.selectbox("País", lpe, index=idx_p, help="Si decía 'PENDIENTE', asigna ahora el país correcto.")
                             
@@ -615,7 +626,7 @@ def app_control_sim():
                                 ch = []
                                 if str(nc)!=str(cur['cliente']): ch.append(f"Cliente: {cur['cliente']} -> {nc}")
                                 if str(npa)!=str(cur['pais']): ch.append(f"País: {cur['pais']} -> {npa}")
-                                d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': cur['imei'], 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
+                                d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': nimei, 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
                                 if actualizar_datos_sim(ic, d, st.session_state.usuario):
                                     st.session_state.res = ch if ch else ["Datos Guardados"]; st.rerun()
             with t2:
