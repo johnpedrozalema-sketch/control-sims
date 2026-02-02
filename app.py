@@ -147,9 +147,8 @@ def gestionar_reset_password():
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
     """
-    FUNCIÓN BLINDADA PARA LEER GOOGLE SHEETS.
-    Convierte todo a texto, quita espacios y corrige errores de formato.
-    Soluciona el problema de 'Buscador no encuentra datos'.
+    FUNCIÓN BLINDADA V3: Normalización agresiva de textos y países.
+    Arregla: Espacios invisibles, mayúsculas/minúsculas y notación científica.
     """
     try:
         sheet = conectar_google()
@@ -166,16 +165,38 @@ def leer_datos(pestaña):
 
         df = pd.DataFrame(data)
 
-        # 1. LIMPIEZA PROFUNDA: Convertir a texto y quitar espacios
+        # 1. CONVERTIR TODO A TEXTO Y QUITAR ESPACIOS (TRIM)
+        # Esto arregla "Guatemala " -> "Guatemala"
         df = df.astype(str).apply(lambda x: x.str.strip())
 
-        # 2. Corregir el ".0" que agrega Excel a veces (89502.0 -> 89502)
+        # 2. LIMPIEZA ESPECÍFICA DE ICCID
+        # Quita notación científica y decimales .0
         if 'iccid' in df.columns:
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
-        if 'numero_linea' in df.columns:
-            df['numero_linea'] = df['numero_linea'].str.replace(r'\.0$', '', regex=True)
+            # Forzamos que si dice "nan" se vuelva vacío para no romper búsquedas
+            df['iccid'] = df['iccid'].replace('nan', '')
 
-        # 3. Restaurar Costos a Numérico (para sumas en Dashboard)
+        # 3. LIMPIEZA CRÍTICA DE PAÍS (NORMALIZACIÓN)
+        # Esto arregla "guatemala" -> "Guatemala" para que coincida con los permisos
+        if 'pais' in df.columns:
+            # Pone la primera letra mayúscula (Title Case)
+            df['pais'] = df['pais'].str.title() 
+            # Mapa de correcciones manuales comunes (opcional pero útil)
+            correcciones = {
+                "Eeuu": "USA",
+                "Usa": "USA",
+                "Cr": "Costa Rica",
+                "Guate": "Guatemala",
+                "Panama": "Panamá", # Agrega tilde si falta
+                "Mexico": "México"  # Agrega tilde si falta
+            }
+            df['pais'] = df['pais'].replace(correcciones)
+
+        # 4. LIMPIEZA DE CLIENTE (Para evitar error al concatenar en buscador)
+        if 'cliente' in df.columns:
+            df['cliente'] = df['cliente'].replace('nan', 'Sin Cliente')
+
+        # 5. RESTAURAR COSTOS A NUMÉRICO
         if 'costo_q' in df.columns:
             df['costo_q'] = pd.to_numeric(df['costo_q'], errors='coerce').fillna(0)
         if 'costo_d' in df.columns:
@@ -184,7 +205,6 @@ def leer_datos(pestaña):
         return df
 
     except Exception as e:
-        # Si falla, no rompemos la app, devolvemos vacío
         print(f"Error leyendo {pestaña}: {e}") 
         return pd.DataFrame()
 
@@ -852,3 +872,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
