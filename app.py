@@ -28,7 +28,7 @@ KEY_FILE = 'credenciales.json'
 
 # LISTA MAESTRA DE PAÍSES
 # Se usa en todos los selectores para evitar errores de escritura
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia", "Pendiente"]
 
 # ==============================================================================
 # 2. FUNCIONES DE SEGURIDAD Y UTILIDAD
@@ -872,4 +872,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
