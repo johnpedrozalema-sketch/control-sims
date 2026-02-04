@@ -64,7 +64,7 @@ def conectar_google():
         else:
             st.error(f"Error conectando a Google: {e}"); st.stop()
 
-# --- FUNCIÓN CRÍTICA: LIMPIEZA DE MONEDA (DEFINIDA ANTES DE USARSE) ---
+# --- FUNCIÓN CRÍTICA: LIMPIEZA DE MONEDA ---
 def limpiar_moneda(valor):
     """
     Convierte texto a número (Float) manejando formatos latinos.
@@ -148,37 +148,45 @@ def gestionar_reset_password():
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
     """
-    FUNCIÓN DE LECTURA BLINDADA.
-    Aplica limpieza de espacios, normalización de ICCID y conversión correcta de Costos.
+    FUNCIÓN BLINDADA V6 (LECTURA ROBUSTA):
+    Usa get_all_values() para leer la hoja completa como matriz de texto.
+    Esto soluciona el problema de filas ocultas por espacios vacíos intermedios.
     """
     try:
         sheet = conectar_google()
         worksheet = sheet.worksheet(pestaña)
-        data = worksheet.get_all_records()
         
-        if not data:
+        # Leemos TODO como texto plano (lista de listas)
+        raw_data = worksheet.get_all_values()
+        
+        # Validaciones básicas
+        if not raw_data or len(raw_data) < 2:
             if pestaña == "sims":
                 return pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
             if pestaña == "clientes":
                 return pd.DataFrame(columns=['nombre'])
             return pd.DataFrame()
 
-        df = pd.DataFrame(data)
+        # La primera fila son los encabezados
+        headers = raw_data[0]
+        rows = raw_data[1:]
+        
+        df = pd.DataFrame(rows, columns=headers)
 
-        # 1. Limpieza de texto general
+        # 1. Limpieza General (Trim de espacios)
         df = df.astype(str).apply(lambda x: x.str.strip())
 
-        # 2. Limpieza ICCID
+        # 2. Limpieza de ICCID
         if 'iccid' in df.columns:
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
-            df['iccid'] = df['iccid'].replace('nan', '')
+            # Filtramos filas basura que no tengan ICCID
+            df = df[df['iccid'] != '']
 
-        # 3. Limpieza País
+        # 3. Limpieza de País
         if 'pais' in df.columns:
-            df['pais'] = df['pais'].replace('nan', '')
             df['pais'] = df['pais'].str.title()
 
-        # 4. LIMPIEZA DE COSTOS (Aquí aplicamos limpiar_moneda para que el DF tenga Floats)
+        # 4. LIMPIEZA DE COSTOS (Conversión a Float)
         if 'costo_q' in df.columns:
             df['costo_q'] = df['costo_q'].apply(limpiar_moneda)
         if 'costo_d' in df.columns:
@@ -479,7 +487,7 @@ def app_control_sim():
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
     clientes_db = obtener_lista_clientes()
 
-    # --- LÓGICA DE CARGA Y FILTRO ---
+    # --- LÓGICA DE CARGA Y FILTRO (CORREGIDA PARA PENDIENTES) ---
     df_raw = leer_datos("sims")
     
     # 1. Normalizar vacíos a PENDIENTE
@@ -527,7 +535,6 @@ def app_control_sim():
                     st.divider(); st.subheader("💰 Finanzas")
                     act = df[df['estado']=='Activa']
                     k1, k2 = st.columns(2)
-                    # Costos ya vienen limpios como Float desde leer_datos
                     k1.metric("Total Q", f"Q {act['costo_q'].sum():,.2f}", border=True)
                     k2.metric("Total $", f"$ {act['costo_d'].sum():,.2f}", border=True)
             with t2:
@@ -635,7 +642,6 @@ def app_control_sim():
                             idx_p = lpe.index(cur['pais']) if cur['pais'] in lpe else 0
                             npa = c1.selectbox("País", lpe, index=idx_p, help="Si decía 'PENDIENTE', asigna ahora el país correcto.")
                             
-                            # COSTOS YA VIENEN LIMPIOS COMO FLOAT
                             ncq = c2.number_input("Costo Q", value=float(cur['costo_q']))
                             ncd = c1.number_input("Costo $", value=float(cur['costo_d']))
                             
