@@ -20,7 +20,7 @@ st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="w
 NOMBRE_HOJA = "Base de Datos SIMs"
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 KEY_FILE = 'credenciales.json'
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Ecuador"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
@@ -65,7 +65,7 @@ def limpiar_moneda(valor):
     except: return 0.0
 
 def normalizar_pais_inteligente(texto_entrada):
-    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "": return "PENDIENTE ⚠️"
+    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "": return "" # Retorna vacío si no hay dato para no borrar lo existente
     t = str(texto_entrada).strip().lower()
     mapa = {
         "guatemala": "Guatemala", "guate": "Guatemala", "gt": "Guatemala",
@@ -74,9 +74,8 @@ def normalizar_pais_inteligente(texto_entrada):
         "nicaragua": "Nicaragua", "ni": "Nicaragua",
         "costa rica": "Costa Rica", "cr": "Costa Rica",
         "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
-        "ecuador": "Ecuador", "ecu": "Ecuador",
-        "RD": "Republica Dominicana", "republica dominicana": "Republica Dominicana",
-        
+        "mexico": "México", "méxico": "México", "mx": "México",
+        "colombia": "Colombia", "co": "Colombia"
     }
     if t in mapa: return mapa[t]
     if t.title() in LISTA_PAISES: return t.title()
@@ -187,34 +186,90 @@ def actualizar_sim_completa(iccid, d):
         ws.batch_update(vals); limpiar_cache(); return True
     except: return False
 
-def procesar_actualizacion_masiva(df_up, user, fill):
+# --- FUNCIÓN DE ACTUALIZACIÓN INTELIGENTE (SMART MERGE) ---
+def procesar_actualizacion_masiva(df_up, user):
+    """
+    Actualiza SOLO si la celda del Excel contiene datos.
+    Si la celda del Excel está vacía, NO toca el dato existente en la base de datos.
+    """
     df_db = leer_datos("sims")
-    if df_db.empty: return 0, "Vacía"
-    df_up.columns = [c.strip().lower().replace(" ", "_") for c in df_up.columns]
+    if df_db.empty: return 0, "Base de datos vacía"
+    
+    # 1. Normalizar Cabeceras del Excel
+    df_up.columns = [c.strip().lower().replace(" ", "_").replace("á","a").replace("í","i") for c in df_up.columns]
+    
+    # Mapeo flexible de columnas para que el sistema entienda "Cliente" o "Nombre Cliente"
+    mapa_flexible = {
+        'icc_id': 'iccid', 'sim': 'iccid',
+        'linea': 'numero_linea', 'numero': 'numero_linea', 'telefono': 'numero_linea',
+        'cliente': 'cliente', 'nombre_cliente': 'cliente', 'empresa': 'cliente',
+        'placa': 'placa', 'vehiculo': 'placa',
+        'imei': 'imei', 'gps': 'imei',
+        'plan': 'tipo_plan', 'tipo': 'tipo_plan', 'datos': 'tipo_plan',
+        'pais': 'pais', 'country': 'pais', 'ubicacion': 'pais',
+        'costo_q': 'costo_q', 'q': 'costo_q',
+        'costo_d': 'costo_d', 'd': 'costo_d', 'usd': 'costo_d'
+    }
+    
+    # Renombrar columnas del Excel según el mapa
+    df_up = df_up.rename(columns=mapa_flexible)
     
     ws = conectar_google().worksheet("sims")
+    
+    # Mapa de ICCID a fila en Google Sheets
     ic_map = {str(ic): i+2 for i, ic in enumerate(df_db['iccid'])}
-    cols = {'numero_linea':2,'cliente':3,'placa':4,'imei':5,'tipo_plan':6,'pais':7,'costo_q':8,'costo_d':9}
+    
+    # Columnas de destino en la BD (Columna A=1, B=2, etc)
+    cols_db = {'numero_linea':2,'cliente':3,'placa':4,'imei':5,'tipo_plan':6,'pais':7,'costo_q':8,'costo_d':9}
     
     ops = []; log = []; hoy = obtener_hora_actual(); count = 0
+    columnas_encontradas = [c for c in df_up.columns if c in cols_db]
+    
+    if not columnas_encontradas:
+        return 0, f"No se encontraron columnas válidas para actualizar. (Detectadas: {list(df_up.columns)})"
+
     for _, row in df_up.iterrows():
         ic = str(row.get('iccid','')).strip().replace(".0","")
+        
+        # Solo procesamos si existe el ICCID en la BD
         if ic in ic_map:
-            r = ic_map[ic]; orig = df_db[df_db['iccid']==ic].iloc[0]
+            r = ic_map[ic]
             chg = []
-            for k, cidx in cols.items():
-                if k in row:
-                    nv = str(row[k]).strip()
-                    if k=='pais': nv = normalizar_pais_inteligente(nv)
-                    ov = str(orig.get(k,'')).strip()
-                    if nv and nv.lower()!='nan':
-                        if (fill and not ov) or (not fill and nv!=ov):
-                            ops.append({'range': gspread.utils.rowcol_to_a1(r, cidx), 'values': [[nv]]})
-                            chg.append(k)
-            if chg: count+=1; log.append([ic, "Masiva", f"Upd: {','.join(chg)}", user, hoy])
+            
+            for k in columnas_encontradas:
+                # Valor crudo del Excel
+                raw_val = row[k]
+                
+                # REGLA DE ORO: Si es nulo/vacío, SALTAR (No borrar dato existente)
+                if pd.isna(raw_val) or str(raw_val).strip() == "":
+                    continue
+                
+                # Si llegamos aquí, hay un dato nuevo que escribir
+                nv = str(raw_val).strip()
+                
+                # Tratamiento especial para País
+                if k == 'pais': nv = normalizar_pais_inteligente(nv)
+                
+                # Si el país normalizado dio vacío (porque era basura), no actualizamos
+                if k == 'pais' and nv == "": continue
+
+                # Agregar operación de actualización
+                cidx = cols_db[k]
+                ops.append({'range': gspread.utils.rowcol_to_a1(r, cidx), 'values': [[nv]]})
+                chg.append(k)
+            
+            if chg:
+                count += 1
+                log.append([ic, "Masiva Smart", f"Upd: {','.join(chg)}", user, hoy])
     
-    if ops: ws.batch_update(ops); escribir_lote("historial", log); return count, "Ok"
-    return 0, "Sin cambios"
+    if ops:
+        try:
+            ws.batch_update(ops)
+            escribir_lote("historial", log)
+            return count, f"Actualizadas {count} SIMs exitosamente."
+        except Exception as e: return 0, f"Error Google: {str(e)}"
+    
+    return 0, "Sin cambios (Probablemente el Excel estaba vacío de datos útiles)."
 
 def registrar_sim(d, user):
     df = leer_datos("sims")
@@ -317,17 +372,12 @@ def app_control_sim():
                         st.success("Guardado"); refrescar_pagina(2)
                     else: st.error("Duplicado")
         
-        # --- CARGA MASIVA ESTABILIZADA ---
         with t2:
             st.info("Sube Excel. Columnas: iccid, linea, cliente, pais...")
-            # ESTE UPLOADER ESTÁ AISLADO PARA EVITAR CONGELAMIENTO
-            upl = st.file_uploader("Archivo Excel (Carga)", type=["xlsx"], key="upl_reg_stable_v11")
-            
-            if upl is not None:
-                st.success("✅ Archivo recibido. Listo para procesar.")
-                if st.button("🚀 Procesar Carga Masiva"):
-                    c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
-                    st.success(f"Cargados: {c} | Duplicados: {d}")
+            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v12")
+            if upl and st.button("Procesar Carga"):
+                c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
+                st.success(f"Cargados: {c} | Duplicados: {d}")
 
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Actualizar")
@@ -351,18 +401,22 @@ def app_control_sim():
                         actualizar_sim_completa(ic, {'numero_linea':nl,'cliente':nc,'placa':np,'imei':ni,'tipo_plan':npl,'pais':npa,'costo_q':ncq,'costo_d':ncd,'estado':'Activa' if nl and nc else 'Botiquin'})
                         st.success("Hecho"); refrescar_pagina(2)
         
-        # --- UPDATE MASIVO ESTABILIZADO ---
+        # --- UPDATE MASIVO INTELIGENTE (FIX) ---
         with t2:
-            st.info("Sube Excel con ICCID y datos a cambiar.")
-            # ESTE UPLOADER TAMBIÉN ESTÁ AISLADO
-            upl_upd = st.file_uploader("Archivo Excel (Actualización)", type=["xlsx"], key="upl_upd_stable_v11")
-            mod = st.radio("Modo", ["Rellenar Vacíos", "Sobrescribir"], horizontal=True)
+            st.markdown("### 📥 Actualización Inteligente")
+            st.info("Solo se actualizarán las celdas que contengan datos. Las celdas vacías en el Excel se ignorarán (no borran datos existentes).")
+            
+            upl_upd = st.file_uploader("Archivo Excel (Update)", type=["xlsx"], key="upl_upd_smart_v12")
             
             if upl_upd is not None:
-                st.success("✅ Archivo recibido. Listo para actualizar.")
-                if st.button("🚀 Ejecutar Update"):
-                    c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd), st.session_state.usuario, "Rellenar" in mod)
-                    st.success(f"{c} registros. {m}")
+                st.success("✅ Archivo recibido.")
+                if st.button("🚀 Ejecutar Actualización Inteligente"):
+                    c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd), st.session_state.usuario)
+                    if c > 0:
+                        st.balloons()
+                        st.success(m)
+                    else:
+                        st.warning(m)
 
     elif choice == "Gestión Clientes": app_gestion_clientes()
     
@@ -412,4 +466,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
