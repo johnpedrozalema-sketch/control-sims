@@ -23,10 +23,10 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'credenciales.json'
 
 # Lista Maestra de Países
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia", "Ecuador"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
 
 # ==============================================================================
-# 2. FUNCIONES DE UTILIDAD Y SEGURIDAD
+# 2. FUNCIONES DE UTILIDAD, SEGURIDAD Y FORMATO
 # ==============================================================================
 
 def make_hashes(password):
@@ -63,6 +63,27 @@ def conectar_google():
             time.sleep(5); st.rerun()
         else:
             st.error(f"Error conectando a Google: {e}"); st.stop()
+
+# --- FUNCIÓN CRÍTICA: LIMPIEZA DE MONEDA (DEFINIDA ANTES DE USARSE) ---
+def limpiar_moneda(valor):
+    """
+    Convierte texto a número (Float) manejando formatos latinos.
+    Ej: "Q 50,00" -> 50.00 | "1.500,00" -> 1500.00
+    """
+    if pd.isna(valor) or str(valor).strip() == "": return 0.0
+    if isinstance(valor, (int, float)): return float(valor)
+    
+    # Quitar símbolos
+    valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
+    
+    # Lógica de puntos y comas
+    if "." in valor and "," in valor: 
+        valor = valor.replace(".", "").replace(",", ".") # 1.500,00 -> 1500.00
+    elif "," in valor:
+        valor = valor.replace(",", ".") # 50,00 -> 50.00
+    
+    try: return float(valor)
+    except: return 0.0
 
 # --- EMAILS ---
 def enviar_correo_sistema(email_destino, asunto, mensaje_html):
@@ -124,37 +145,11 @@ def gestionar_reset_password():
 # 3. LÓGICA DE NEGOCIO (DATOS, SIMS, CLIENTES)
 # ==============================================================================
 
-# --- FUNCION CRÍTICA DE LIMPIEZA DE MONEDA ---
-# (Movida al inicio para que leer_datos pueda usarla)
-def limpiar_moneda(valor):
-    """
-    Convierte texto a número asumiendo formato latino o mixto.
-    Ej: "Q 50,00" -> 50.00
-    Ej: "1.500,00" -> 1500.00
-    """
-    if pd.isna(valor) or str(valor).strip() == "": return 0.0
-    if isinstance(valor, (int, float)): return float(valor)
-    
-    # 1. Quitar símbolos
-    valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
-    
-    # 2. Manejo inteligente de puntos y comas
-    if "." in valor and "," in valor: 
-        # Formato complejo: 1.500,00
-        valor = valor.replace(".", "").replace(",", ".")
-    elif "," in valor:
-        # Formato decimal simple: 50,00
-        valor = valor.replace(",", ".")
-    
-    try: return float(valor)
-    except: return 0.0
-
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
     """
-    FUNCIÓN BLINDADA V4:
-    - Limpieza de textos y espacios.
-    - Limpieza de Moneda INTEGRADA (Arregla el bug de costos en 0).
+    FUNCIÓN DE LECTURA BLINDADA.
+    Aplica limpieza de espacios, normalización de ICCID y conversión correcta de Costos.
     """
     try:
         sheet = conectar_google()
@@ -170,21 +165,20 @@ def leer_datos(pestaña):
 
         df = pd.DataFrame(data)
 
-        # 1. Convertir todo a texto inicial y quitar espacios
+        # 1. Limpieza de texto general
         df = df.astype(str).apply(lambda x: x.str.strip())
 
-        # 2. Limpieza de ICCID
+        # 2. Limpieza ICCID
         if 'iccid' in df.columns:
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
             df['iccid'] = df['iccid'].replace('nan', '')
 
-        # 3. Limpieza de País
+        # 3. Limpieza País
         if 'pais' in df.columns:
             df['pais'] = df['pais'].replace('nan', '')
             df['pais'] = df['pais'].str.title()
 
-        # 4. LIMPIEZA Y RESTAURACIÓN DE COSTOS (AQUÍ ESTABA EL ERROR ANTES)
-        # Ahora usamos limpiar_moneda() en lugar de to_numeric() directo
+        # 4. LIMPIEZA DE COSTOS (Aquí aplicamos limpiar_moneda para que el DF tenga Floats)
         if 'costo_q' in df.columns:
             df['costo_q'] = df['costo_q'].apply(limpiar_moneda)
         if 'costo_d' in df.columns:
@@ -503,14 +497,23 @@ def app_control_sim():
     # --- PANTALLAS ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
-        if not df.empty and 'estado' in df.columns:
-            st.markdown("### Resumen General")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Inventario", len(df), border=True)
-            c2.metric("Activas", len(df[df['estado']=='Activa']), border=True)
-            c3.metric("Botiquín (Stock)", len(df[df['estado']=='Botiquin']), border=True)
-            c4.metric("Bajas / Canceladas", len(df[df['estado']=='Cancelada']), border=True)
-            st.markdown("---")
+        
+        # SIEMPRE MOSTRAR TARJETAS (Incluso si son 0)
+        st.markdown("### Resumen General")
+        total_inv = len(df)
+        total_activas = len(df[df['estado']=='Activa']) if not df.empty else 0
+        total_botiquin = len(df[df['estado']=='Botiquin']) if not df.empty else 0
+        total_bajas = len(df[df['estado']=='Cancelada']) if not df.empty else 0
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Inventario", total_inv, border=True)
+        c2.metric("Activas", total_activas, border=True)
+        c3.metric("Botiquín (Stock)", total_botiquin, border=True)
+        c4.metric("Bajas / Canceladas", total_bajas, border=True)
+        st.markdown("---")
+        
+        # Validar si hay datos para mostrar gráficos
+        if total_inv > 0:
             t1, t2 = st.tabs(["🌍 Análisis Global", "🏢 CRM Cliente"])
             with t1:
                 st.subheader("Distribución por País")
@@ -522,9 +525,9 @@ def app_control_sim():
                     with gb: st.dataframe(cp, hide_index=True, use_container_width=True, column_config={"Cantidad": st.column_config.ProgressColumn("Volumen", format="%d", min_value=0, max_value=int(cp['Cantidad'].max()))})
                 if st.session_state.rol == 'admin':
                     st.divider(); st.subheader("💰 Finanzas")
-                    # No necesitamos limpiar_moneda aquí, ya viene limpio de leer_datos()
                     act = df[df['estado']=='Activa']
                     k1, k2 = st.columns(2)
+                    # Costos ya vienen limpios como Float desde leer_datos
                     k1.metric("Total Q", f"Q {act['costo_q'].sum():,.2f}", border=True)
                     k2.metric("Total $", f"$ {act['costo_d'].sum():,.2f}", border=True)
             with t2:
@@ -540,6 +543,8 @@ def app_control_sim():
                         k3.metric("Bajas", len(df_c[df_c['estado']=='Cancelada']), border=True)
                         st.dataframe(df_c[['iccid','numero_linea','placa','estado','pais']], use_container_width=True, hide_index=True)
                     else: st.warning("Sin SIMs asignadas.")
+        else:
+            st.info("👋 No hay SIMs registradas en tu región o permisos.")
 
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador Inteligente")
@@ -561,8 +566,9 @@ def app_control_sim():
                     st.divider()
                     k4,k5,k6=st.columns(3)
                     k4.write(f"**Placa:** {row['placa']}")
-                    k5.write(f"**IMEI:** {row['imei']}") # IMEI AGREGADO
+                    k5.write(f"**IMEI:** {row['imei']}")
                     k6.write(f"**Plan:** {row['tipo_plan']}")
+        else: st.warning("No hay datos disponibles para búsqueda.")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Registrar")
@@ -622,16 +628,14 @@ def app_control_sim():
                             else: nc = c2.text_input("Cliente", value=cur['cliente'])
                             
                             np = c1.text_input("Placa", value=cur['placa'])
-                            nimei = c2.text_input("IMEI", value=cur['imei']) # IMEI AGREGADO
-                            
+                            nimei = c2.text_input("IMEI", value=cur['imei'])
                             npl = c1.text_input("Plan", value=cur['tipo_plan'])
                             
                             lpe = [p for p in LISTA_PAISES if p in paises_user] if paises_user else LISTA_PAISES
                             idx_p = lpe.index(cur['pais']) if cur['pais'] in lpe else 0
                             npa = c1.selectbox("País", lpe, index=idx_p, help="Si decía 'PENDIENTE', asigna ahora el país correcto.")
                             
-                            # Al usar leer_datos mejorado, los costos ya son floats limpios.
-                            # Usamos float() para asegurar el tipo en number_input
+                            # COSTOS YA VIENEN LIMPIOS COMO FLOAT
                             ncq = c2.number_input("Costo Q", value=float(cur['costo_q']))
                             ncd = c1.number_input("Costo $", value=float(cur['costo_d']))
                             
@@ -757,4 +761,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
