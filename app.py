@@ -20,7 +20,7 @@ st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="w
 NOMBRE_HOJA = "Base de Datos SIMs"
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 KEY_FILE = 'credenciales.json'
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Ecuador"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
@@ -74,8 +74,8 @@ def normalizar_pais_inteligente(texto_entrada):
         "nicaragua": "Nicaragua", "ni": "Nicaragua",
         "costa rica": "Costa Rica", "cr": "Costa Rica",
         "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
-        "mexico": "México", "méxico": "México", "mx": "México",
-        "colombia": "Colombia", "co": "Colombia"
+        "republica dominicana": "Republica Dominicana", "RD": "Republica Dominicana", "rd": "Republica Dominicana",
+        "ecuador": "Ecuador", "ecu": "Ecuador"
     }
     if t in mapa: return mapa[t]
     if t.title() in LISTA_PAISES: return t.title()
@@ -466,3 +466,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
