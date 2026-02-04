@@ -44,29 +44,16 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 def conectar_google():
-    """
-    CORREGIDO: Usa st.secrets directamenet en lugar de st.session_state.secrets
-    """
     try:
-        # Primero intentamos usar Secrets (Nube)
         if "gcp_service_account" in st.secrets:
-            # AQUÍ ESTABA EL ERROR: Cambiado de st.session_state.secrets a st.secrets
             creds_dict = dict(st.secrets["gcp_service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
         else:
-            # Si no hay secrets, usamos el archivo local
             creds = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE, SCOPE)
-            
         client = gspread.authorize(creds)
         return client.open(NOMBRE_HOJA)
     except Exception as e:
-        if "429" in str(e):
-            st.warning("⏳ Esperando a Google (Límite de velocidad)...")
-            time.sleep(5); st.rerun()
-        else:
-            # Mostramos el error limpio pero detenemos la ejecución
-            st.error(f"Error conectando a Google: {e}")
-            st.stop()
+        st.error(f"Error conexión Google: {e}"); st.stop()
 
 def limpiar_moneda(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
@@ -97,7 +84,6 @@ def normalizar_pais_inteligente(texto_entrada):
 # --- EMAILS ---
 def enviar_correo_sistema(dest, asunto, html):
     try:
-        # Verificamos si existe configuración de email en secrets
         if "email" in st.secrets:
             EMAIL_EMISOR = st.secrets["email"]["address"]
             EMAIL_PASS = st.secrets["email"]["password"]
@@ -266,7 +252,6 @@ def app_control_sim():
         ops = ["Dashboard", "🔍 Consulta SIM", "Registrar SIM", "Actualizar Datos", "Gestión Clientes", "Traslados", "Cancelar/Gestionar", "Auditoría", "Reportes"]
     choice = st.sidebar.radio("Opciones:", ops)
     
-    # --- CARGA INTELIGENTE ---
     df_raw = leer_datos("sims")
     if 'pais' in df_raw.columns:
         df_raw['pais'] = df_raw['pais'].replace("", "PENDIENTE ⚠️")
@@ -276,7 +261,6 @@ def app_control_sim():
     elif p_user: df = df_raw[ (df_raw['pais'].isin(p_user)) | (df_raw['pais'] == "PENDIENTE ⚠️") ]
     else: df = pd.DataFrame(columns=df_raw.columns)
 
-    # --- DASHBOARD ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
         if st.session_state.rol == 'admin' and not df.empty:
@@ -309,7 +293,6 @@ def app_control_sim():
                 c = st.selectbox("Cliente:", sorted(list(set(clis))), index=None)
                 if c: st.dataframe(df[df['cliente']==c], use_container_width=True)
 
-    # --- CONSULTA SIM ---
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador")
         if not df.empty:
@@ -320,7 +303,6 @@ def app_control_sim():
                 if not res.empty: st.success(f"Encontrados: {len(res)}"); st.dataframe(res)
                 else: st.warning("No encontrado")
 
-    # --- REGISTRAR SIM ---
     elif choice == "Registrar SIM":
         st.subheader("➕ Registro")
         t1, t2 = st.tabs(["Manual", "Masiva"])
@@ -333,14 +315,19 @@ def app_control_sim():
                     if registrar_sim({'iccid':i,'numero_linea':l,'cliente':cl,'pais':p,'placa':pl,'imei':im,'tipo_plan':pn,'costo_q':cq,'costo_d':cd}, st.session_state.usuario):
                         st.success("Guardado"); refrescar_pagina(2)
                     else: st.error("Duplicado")
+        
+        # --- CARGA MASIVA ESTABILIZADA ---
         with t2:
             st.info("Sube Excel. Columnas: iccid, linea, cliente, pais...")
-            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v10")
-            if upl and st.button("Procesar Carga"):
-                c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
-                st.success(f"Cargados: {c} | Duplicados: {d}")
+            # ESTE UPLOADER ESTÁ AISLADO PARA EVITAR CONGELAMIENTO
+            upl = st.file_uploader("Archivo Excel (Carga)", type=["xlsx"], key="upl_reg_stable_v11")
+            
+            if upl is not None:
+                st.success("✅ Archivo recibido. Listo para procesar.")
+                if st.button("🚀 Procesar Carga Masiva"):
+                    c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
+                    st.success(f"Cargados: {c} | Duplicados: {d}")
 
-    # --- ACTUALIZAR DATOS ---
     elif choice == "Actualizar Datos":
         st.subheader("✏️ Actualizar")
         t1, t2 = st.tabs(["Manual", "Masiva"])
@@ -362,13 +349,19 @@ def app_control_sim():
                     if st.form_submit_button("Actualizar"):
                         actualizar_sim_completa(ic, {'numero_linea':nl,'cliente':nc,'placa':np,'imei':ni,'tipo_plan':npl,'pais':npa,'costo_q':ncq,'costo_d':ncd,'estado':'Activa' if nl and nc else 'Botiquin'})
                         st.success("Hecho"); refrescar_pagina(2)
+        
+        # --- UPDATE MASIVO ESTABILIZADO ---
         with t2:
             st.info("Sube Excel con ICCID y datos a cambiar.")
-            upl_upd = st.file_uploader("Archivo Excel Updates", type=["xlsx"], key="up_act_final_v10")
+            # ESTE UPLOADER TAMBIÉN ESTÁ AISLADO
+            upl_upd = st.file_uploader("Archivo Excel (Actualización)", type=["xlsx"], key="upl_upd_stable_v11")
             mod = st.radio("Modo", ["Rellenar Vacíos", "Sobrescribir"], horizontal=True)
-            if upl_upd and st.button("Ejecutar Update"):
-                c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd), st.session_state.usuario, "Rellenar" in mod)
-                st.success(f"{c} registros. {m}")
+            
+            if upl_upd is not None:
+                st.success("✅ Archivo recibido. Listo para actualizar.")
+                if st.button("🚀 Ejecutar Update"):
+                    c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd), st.session_state.usuario, "Rellenar" in mod)
+                    st.success(f"{c} registros. {m}")
 
     elif choice == "Gestión Clientes": app_gestion_clientes()
     
