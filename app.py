@@ -23,7 +23,7 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'credenciales.json'
 
 # Lista Maestra de Países
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia", "Ecuador"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD Y SEGURIDAD
@@ -757,3 +757,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
