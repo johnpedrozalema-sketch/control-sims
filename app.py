@@ -44,19 +44,29 @@ def refrescar_pagina(segundos=3):
     st.rerun()
 
 def conectar_google():
+    """
+    CORREGIDO: Usa st.secrets directamenet en lugar de st.session_state.secrets
+    """
     try:
+        # Primero intentamos usar Secrets (Nube)
         if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.session_state.secrets["gcp_service_account"])
+            # AQUÍ ESTABA EL ERROR: Cambiado de st.session_state.secrets a st.secrets
+            creds_dict = dict(st.secrets["gcp_service_account"])
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
         else:
+            # Si no hay secrets, usamos el archivo local
             creds = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE, SCOPE)
+            
         client = gspread.authorize(creds)
         return client.open(NOMBRE_HOJA)
     except Exception as e:
         if "429" in str(e):
             st.warning("⏳ Esperando a Google (Límite de velocidad)...")
             time.sleep(5); st.rerun()
-        else: st.error(f"Error conectando a Google: {e}"); st.stop()
+        else:
+            # Mostramos el error limpio pero detenemos la ejecución
+            st.error(f"Error conectando a Google: {e}")
+            st.stop()
 
 def limpiar_moneda(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
@@ -87,20 +97,25 @@ def normalizar_pais_inteligente(texto_entrada):
 # --- EMAILS ---
 def enviar_correo_sistema(dest, asunto, html):
     try:
-        EMAIL_EMISOR = st.secrets["email"]["address"]
-        EMAIL_PASS = st.secrets["email"]["password"]
-        msg = MIMEMultipart(); msg['From']=EMAIL_EMISOR; msg['To']=dest; msg['Subject']=asunto
-        msg.attach(MIMEText(html, 'html'))
-        s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls(); s.login(EMAIL_EMISOR, EMAIL_PASS)
-        s.send_message(msg); s.quit(); return True
+        # Verificamos si existe configuración de email en secrets
+        if "email" in st.secrets:
+            EMAIL_EMISOR = st.secrets["email"]["address"]
+            EMAIL_PASS = st.secrets["email"]["password"]
+            msg = MIMEMultipart(); msg['From']=EMAIL_EMISOR; msg['To']=dest; msg['Subject']=asunto
+            msg.attach(MIMEText(html, 'html'))
+            s = smtplib.SMTP('smtp.gmail.com', 587); s.starttls(); s.login(EMAIL_EMISOR, EMAIL_PASS)
+            s.send_message(msg); s.quit(); return True
+        return False
     except: return False
 
 def enviar_link_activacion(dest, token, nom):
-    link = f"{st.secrets['email'].get('base_url','http://localhost:8501')}/?token_reset={token}"
+    base = st.secrets['email'].get('base_url','http://localhost:8501') if "email" in st.secrets else 'http://localhost:8501'
+    link = f"{base}/?token_reset={token}"
     return enviar_correo_sistema(dest, "Activa tu cuenta", f"Hola {nom}, activa aquí: {link}")
 
 def enviar_link_recuperacion(dest, token, nom):
-    link = f"{st.secrets['email'].get('base_url','http://localhost:8501')}/?token_reset={token}"
+    base = st.secrets['email'].get('base_url','http://localhost:8501') if "email" in st.secrets else 'http://localhost:8501'
+    link = f"{base}/?token_reset={token}"
     return enviar_correo_sistema(dest, "Recuperar Clave", f"Hola {nom}, recupera aquí: {link}")
 
 def gestionar_reset_password():
@@ -320,7 +335,6 @@ def app_control_sim():
                     else: st.error("Duplicado")
         with t2:
             st.info("Sube Excel. Columnas: iccid, linea, cliente, pais...")
-            # KEY NUEVA Y ÚNICA PARA EVITAR BLOQUEO
             upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v10")
             if upl and st.button("Procesar Carga"):
                 c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
@@ -340,7 +354,6 @@ def app_control_sim():
                     np=c1.text_input("Placa", curr['placa']); ni=c2.text_input("IMEI", curr['imei'])
                     npl=c1.text_input("Plan", curr['tipo_plan'])
                     
-                    # Manejo seguro del índice de país
                     p_val = curr['pais'] if curr['pais'] in LISTA_PAISES else LISTA_PAISES[0]
                     p_idx = LISTA_PAISES.index(p_val)
                     npa=c2.selectbox("País", LISTA_PAISES, index=p_idx)
@@ -351,7 +364,6 @@ def app_control_sim():
                         st.success("Hecho"); refrescar_pagina(2)
         with t2:
             st.info("Sube Excel con ICCID y datos a cambiar.")
-            # KEY NUEVA Y ÚNICA PARA EVITAR BLOQUEO
             upl_upd = st.file_uploader("Archivo Excel Updates", type=["xlsx"], key="up_act_final_v10")
             mod = st.radio("Modo", ["Rellenar Vacíos", "Sobrescribir"], horizontal=True)
             if upl_upd and st.button("Ejecutar Update"):
@@ -360,7 +372,6 @@ def app_control_sim():
 
     elif choice == "Gestión Clientes": app_gestion_clientes()
     
-    # --- OTRAS OPCIONES (Mantenidas simplificadas) ---
     elif choice == "Reportes": st.dataframe(df)
     elif choice == "Traslados": 
         st.subheader("Traslados"); 
