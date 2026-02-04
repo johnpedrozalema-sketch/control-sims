@@ -630,60 +630,123 @@ def app_control_sim():
                 c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
                 st.success(f"Ok: {c} | Dup: {d}")
 
+    # --- ACTUALIZAR DATOS (CORREGIDO: CARGA MASIVA FLUIDA) ---
     elif choice == "Actualizar Datos":
-        st.subheader("✏️ Editar")
+        st.subheader("✏️ Edición de Inventario")
+        
+        # Inicializar variables de estado para mensajes
         if 'ukey' not in st.session_state: st.session_state.ukey = 0
         if 'res' not in st.session_state: st.session_state.res = None
+        
+        # Mostrar mensaje de éxito si hubo una operación previa
         if st.session_state.res:
             with st.container(border=True):
-                st.success("✅ Actualización Exitosa")
-                for r in st.session_state.res: st.markdown(f"- {r}")
-                if st.button("Aceptar y Nueva Búsqueda", type="primary"): 
-                    st.session_state.res=None; st.session_state.ukey+=1; st.rerun()
+                st.success("✅ Operación Finalizada")
+                # Si es lista larga, la mostramos en un expander
+                if isinstance(st.session_state.res, list) and len(st.session_state.res) > 5:
+                    st.write(f"Se actualizaron {len(st.session_state.res)} registros.")
+                    with st.expander("Ver detalles"):
+                        for r in st.session_state.res: st.write(f"- {r}")
+                else:
+                    # Si es texto simple o lista corta
+                    if isinstance(st.session_state.res, list):
+                        for r in st.session_state.res: st.write(f"- {r}")
+                    else:
+                        st.write(st.session_state.res)
+                
+                if st.button("Aceptar y Limpiar", type="primary"): 
+                    st.session_state.res = None
+                    st.session_state.ukey += 1
+                    st.rerun()
+        
         else:
-            t1, t2 = st.tabs(["Unitario", "Masivo"])
+            # PESTAÑAS DE EDICIÓN
+            t1, t2 = st.tabs(["👆 Edición Manual (Uno a Uno)", "📂 Carga Masiva (Excel)"])
+            
+            # --- TAB 1: MANUAL ---
             with t1:
+                # (Lógica manual igual que antes...)
                 if not df.empty:
-                    df['d'] = df['iccid'].astype(str) + " | " + df['cliente'].astype(str)
-                    sel = st.selectbox("Buscar:", df['d'].tolist(), index=None, placeholder="Escribe...", key=f"sb_{st.session_state.ukey}")
+                    # Crear columna de búsqueda temporal
+                    df['busqueda'] = df['iccid'].astype(str) + " | " + df['cliente'].astype(str)
+                    sel = st.selectbox("Buscar SIM para editar:", df['busqueda'].tolist(), index=None, placeholder="Escribe ICCID o Cliente...", key=f"sb_{st.session_state.ukey}")
+                    
                     if sel:
                         ic = sel.split(" | ")[0]
                         cur = df[df['iccid']==ic].iloc[0]
-                        st.info(f"Editando: **{ic}**")
-                        with st.form("ed"):
-                            c1,c2 = st.columns(2)
+                        
+                        st.info(f"Editando ICCID: **{ic}**")
+                        
+                        with st.form("form_edicion_manual"):
+                            c1, c2 = st.columns(2)
+                            # Campos editables
                             nl = c1.text_input("Línea", value=cur['numero_linea'])
+                            # Cliente (con lógica de preservar el actual)
                             idx_c = None
                             if str(cur['cliente']) in clientes_db: idx_c = clientes_db.index(str(cur['cliente']))
                             if clientes_db: nc = c2.selectbox("Cliente", clientes_db, index=idx_c)
                             else: nc = c2.text_input("Cliente", value=cur['cliente'])
                             
                             np = c1.text_input("Placa", value=cur['placa'])
-                            nimei = c2.text_input("IMEI", value=cur['imei'])
+                            ni = c2.text_input("IMEI", value=cur['imei'])
                             npl = c1.text_input("Plan", value=cur['tipo_plan'])
                             
+                            # País (con lógica de preservar el actual)
                             lpe = [p for p in LISTA_PAISES if p in paises_user] if paises_user else LISTA_PAISES
-                            idx_p = lpe.index(cur['pais']) if cur['pais'] in lpe else 0
-                            npa = c1.selectbox("País", lpe, index=idx_p, help="Si decía 'PENDIENTE', asigna ahora el país correcto.")
+                            # Normalizamos el país actual para buscarlo en la lista
+                            pais_actual_norm = normalizar_pais_inteligente(cur['pais'])
+                            idx_p = lpe.index(pais_actual_norm) if pais_actual_norm in lpe else 0
+                            npa = c2.selectbox("País", lpe, index=idx_p)
                             
-                            ncq = c2.number_input("Costo Q", value=float(cur['costo_q']))
-                            ncd = c1.number_input("Costo $", value=float(cur['costo_d']))
+                            ncq = c1.number_input("Costo Q", value=float(cur['costo_q']))
+                            ncd = c2.number_input("Costo $", value=float(cur['costo_d']))
                             
-                            if st.form_submit_button("Actualizar"):
-                                ch = []
-                                if str(nc)!=str(cur['cliente']): ch.append(f"Cliente: {cur['cliente']} -> {nc}")
-                                if str(npa)!=str(cur['pais']): ch.append(f"País: {cur['pais']} -> {npa}")
-                                d = {'numero_linea': nl, 'cliente': nc, 'placa': np, 'imei': nimei, 'tipo_plan': npl, 'pais': npa, 'costo_q': ncq, 'costo_d': ncd}
+                            st.markdown("---")
+                            if st.form_submit_button("💾 Guardar Cambios"):
+                                # Preparar datos
+                                d = {
+                                    'numero_linea': nl, 'cliente': nc, 'placa': np, 
+                                    'imei': ni, 'tipo_plan': npl, 'pais': npa, 
+                                    'costo_q': ncq, 'costo_d': ncd
+                                }
+                                # Ejecutar actualización
                                 if actualizar_datos_sim(ic, d, st.session_state.usuario):
-                                    st.session_state.res = ch if ch else ["Datos Guardados"]; st.rerun()
+                                    st.session_state.res = [f"Actualizado correctamente: {ic}"]
+                                    st.rerun()
+
+            # --- TAB 2: MASIVA (AQUÍ ESTABA EL ERROR) ---
             with t2:
-                st.info("Sube Excel con columna 'iccid' y columnas a editar.")
-                upl = st.file_uploader("Update Excel", type=["xlsx"])
-                mod = st.radio("Modo", ["Rellenar Vacíos", "Sobrescribir Todo"])
-                if upl and st.button("Ejecutar Masiva"):
-                    cant, msg = procesar_actualizacion_masiva(pd.read_excel(upl), st.session_state.usuario, "Rellenar" in mod)
-                    if cant: st.balloons(); st.success(msg)
-                    else: st.warning(msg)
+                st.markdown("### 📥 Actualización por Lotes")
+                st.info("Sube un Excel con una columna llamada `iccid` y las columnas que quieras modificar (ej: `cliente`, `placa`, `pais`).")
+                
+                # 1. MODO DE ACTUALIZACIÓN
+                mod = st.radio("¿Cómo quieres actualizar?", 
+                               ["Rellenar solo vacíos (Seguro)", "Sobrescribir todo (Cuidado)"],
+                               horizontal=True)
+                es_relleno = "Rellenar" in mod
+
+                # 2. EL CARGADOR DE ARCHIVOS (FUERA DE CUALQUIER FORMULARIO)
+                upl = st.file_uploader("Selecciona tu archivo Excel", type=["xlsx"], key="uploader_masivo_update")
+                
+                # 3. LÓGICA DE PROCESAMIENTO
+                if upl is not None:
+                    try:
+                        df_upload = pd.read_excel(upl)
+                        st.success(f"Archivo cargado: {len(df_upload)} filas detectadas.")
+                        
+                        # Botón de acción separado para no bloquear la carga
+                        if st.button("🚀 Ejecutar Actualización Masiva", type="primary"):
+                            with st.spinner("Procesando... esto puede tomar unos segundos..."):
+                                cant, msg = procesar_actualizacion_masiva(df_upload, st.session_state.usuario, es_relleno)
+                            
+                            if cant > 0:
+                                st.session_state.res = [f"✅ Proceso completado: {msg}"]
+                                st.rerun()
+                            else:
+                                st.warning(f"No se realizaron cambios: {msg}")
+                                
+                    except Exception as e:
+                        st.error(f"Error leyendo el archivo: {e}")
 
     elif choice == "Gestión Clientes": app_gestion_clientes()
 
@@ -791,5 +854,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
