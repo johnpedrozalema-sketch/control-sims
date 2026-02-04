@@ -23,7 +23,7 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'credenciales.json'
 
 # ESTÁNDAR OFICIAL
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Colombia", "Republica Dominicana"]
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Colombia", "Republica Dominicana", "Ecuador"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD Y NORMALIZACIÓN
@@ -93,7 +93,8 @@ def normalizar_pais_inteligente(texto_entrada):
         "costa rica": "Costa Rica", "cr": "Costa Rica", "tiquicia": "Costa Rica",
         "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
         "mexico": "México", "méxico": "México", "mx": "México",
-        "colombia": "Colombia", "col": "Colombia", "co": "Colombia"
+        "colombia": "Colombia", "col": "Colombia", "co": "Colombia", 
+        "ec": "Ecuador", "ecuador": "Ecuador"
     }
     
     # 2. Buscamos coincidencia
@@ -790,4 +791,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
