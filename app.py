@@ -17,16 +17,16 @@ from email.mime.multipart import MIMEMultipart
 # ==============================================================================
 st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="wide")
 
-# Constantes de Conexión
+# Constantes
 NOMBRE_HOJA = "Base de Datos SIMs"
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 KEY_FILE = 'credenciales.json'
 
-# Lista Maestra de Países
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia","Republica Dominicana","Ecuador"]
+# ESTÁNDAR OFICIAL
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
 
 # ==============================================================================
-# 2. FUNCIONES DE UTILIDAD, SEGURIDAD Y FORMATO
+# 2. FUNCIONES DE UTILIDAD Y NORMALIZACIÓN
 # ==============================================================================
 
 def make_hashes(password):
@@ -64,26 +64,49 @@ def conectar_google():
         else:
             st.error(f"Error conectando a Google: {e}"); st.stop()
 
-# --- FUNCIÓN CRÍTICA: LIMPIEZA DE MONEDA ---
 def limpiar_moneda(valor):
-    """
-    Convierte texto a número (Float) manejando formatos latinos.
-    Ej: "Q 50,00" -> 50.00 | "1.500,00" -> 1500.00
-    """
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     if isinstance(valor, (int, float)): return float(valor)
-    
-    # Quitar símbolos
     valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
-    
-    # Lógica de puntos y comas
-    if "." in valor and "," in valor: 
-        valor = valor.replace(".", "").replace(",", ".") # 1.500,00 -> 1500.00
-    elif "," in valor:
-        valor = valor.replace(",", ".") # 50,00 -> 50.00
-    
+    if "." in valor and "," in valor: valor = valor.replace(".", "").replace(",", ".")
+    elif "," in valor: valor = valor.replace(",", ".")
     try: return float(valor)
     except: return 0.0
+
+# --- CEREBRO DE NORMALIZACIÓN (AUTO-CORRECTOR DE PAÍSES) ---
+def normalizar_pais_inteligente(texto_entrada):
+    """
+    Recibe cualquier texto sucio y devuelve un PAÍS OFICIAL o 'PENDIENTE ⚠️'.
+    Ej: "guate" -> "Guatemala" | "mx" -> "México" | "Bodega" -> "PENDIENTE ⚠️"
+    """
+    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "":
+        return "PENDIENTE ⚠️"
+    
+    texto = str(texto_entrada).strip().lower() # Todo a minúsculas para comparar
+    
+    # 1. Mapa de correcciones comunes
+    mapa = {
+        "guatemala": "Guatemala", "guate": "Guatemala", "gt": "Guatemala",
+        "el salvador": "El Salvador", "salvador": "El Salvador", "sv": "El Salvador",
+        "honduras": "Honduras", "hn": "Honduras",
+        "nicaragua": "Nicaragua", "nica": "Nicaragua", "ni": "Nicaragua",
+        "costa rica": "Costa Rica", "cr": "Costa Rica", "tiquicia": "Costa Rica",
+        "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
+        "mexico": "México", "méxico": "México", "mx": "México",
+        "colombia": "Colombia", "col": "Colombia", "co": "Colombia"
+    }
+    
+    # 2. Buscamos coincidencia
+    if texto in mapa:
+        return mapa[texto]
+    
+    # 3. Si no coincide, intentamos Title Case (Ej: "Brasil" -> "Brasil")
+    texto_title = str(texto_entrada).strip().title()
+    if texto_title in LISTA_PAISES:
+        return texto_title
+        
+    # 4. Si no sabemos qué es, devolvemos PENDIENTE para que el Admin lo vea y corrija
+    return "PENDIENTE ⚠️"
 
 # --- EMAILS ---
 def enviar_correo_sistema(email_destino, asunto, mensaje_html):
@@ -142,24 +165,16 @@ def gestionar_reset_password():
     return False
 
 # ==============================================================================
-# 3. LÓGICA DE NEGOCIO (DATOS, SIMS, CLIENTES)
+# 3. LÓGICA DE NEGOCIO (LECTURA ROBUSTA)
 # ==============================================================================
 
 @st.cache_data(ttl=10)
 def leer_datos(pestaña):
-    """
-    FUNCIÓN BLINDADA V6 (LECTURA ROBUSTA):
-    Usa get_all_values() para leer la hoja completa como matriz de texto.
-    Esto soluciona el problema de filas ocultas por espacios vacíos intermedios.
-    """
     try:
         sheet = conectar_google()
         worksheet = sheet.worksheet(pestaña)
+        raw_data = worksheet.get_all_values() # Leemos TODO como texto
         
-        # Leemos TODO como texto plano (lista de listas)
-        raw_data = worksheet.get_all_values()
-        
-        # Validaciones básicas
         if not raw_data or len(raw_data) < 2:
             if pestaña == "sims":
                 return pd.DataFrame(columns=['iccid', 'numero_linea', 'cliente', 'placa', 'imei', 'tipo_plan', 'pais', 'costo_q', 'costo_d', 'estado', 'fecha_registro'])
@@ -167,30 +182,23 @@ def leer_datos(pestaña):
                 return pd.DataFrame(columns=['nombre'])
             return pd.DataFrame()
 
-        # La primera fila son los encabezados
         headers = raw_data[0]
         rows = raw_data[1:]
-        
         df = pd.DataFrame(rows, columns=headers)
 
-        # 1. Limpieza General (Trim de espacios)
+        # Limpieza básica
         df = df.astype(str).apply(lambda x: x.str.strip())
 
-        # 2. Limpieza de ICCID
         if 'iccid' in df.columns:
             df['iccid'] = df['iccid'].str.replace(r'\.0$', '', regex=True)
-            # Filtramos filas basura que no tengan ICCID
-            df = df[df['iccid'] != '']
-
-        # 3. Limpieza de País
+            # NO BORRAMOS FILAS para no perder datos mal formados, solo limpiamos
+            
         if 'pais' in df.columns:
+            # Aquí aplicamos una limpieza visual rápida, la fuerte es al guardar
             df['pais'] = df['pais'].str.title()
-
-        # 4. LIMPIEZA DE COSTOS (Conversión a Float)
-        if 'costo_q' in df.columns:
-            df['costo_q'] = df['costo_q'].apply(limpiar_moneda)
-        if 'costo_d' in df.columns:
-            df['costo_d'] = df['costo_d'].apply(limpiar_moneda)
+            
+        if 'costo_q' in df.columns: df['costo_q'] = df['costo_q'].apply(limpiar_moneda)
+        if 'costo_d' in df.columns: df['costo_d'] = df['costo_d'].apply(limpiar_moneda)
 
         return df
 
@@ -208,7 +216,7 @@ def escribir_lote(pestaña, filas):
     if filas: conectar_google().worksheet(pestaña).append_rows(filas)
     limpiar_cache()
 
-# --- LÓGICA CLIENTES ---
+# --- CLIENTES ---
 def obtener_lista_clientes():
     df = leer_datos("clientes")
     if not df.empty and 'nombre' in df.columns:
@@ -223,7 +231,7 @@ def crear_nuevo_cliente(nombre_cliente):
     escribir_fila("clientes", [nombre_cliente])
     return True, "Cliente creado."
 
-# --- ACTUALIZACIÓN Y TRANSACCIONES ---
+# --- ACTUALIZACIÓN (CON AUTO-CORRECCIÓN DE PAÍS) ---
 def actualizar_sim_completa(iccid, datos_dict):
     ws = conectar_google().worksheet("sims")
     try:
@@ -258,16 +266,13 @@ def procesar_actualizacion_masiva(df_updates, usuario, solo_vacios=True):
     if df_db.empty: return 0, "DB vacía"
     df_db['iccid'] = df_db['iccid'].astype(str)
     df_updates['iccid'] = df_updates['iccid'].astype(str).str.replace(".0", "", regex=False)
-    
     ws = conectar_google().worksheet("sims")
     mapa_cols = {'numero_linea':2, 'cliente':3, 'placa':4, 'imei':5, 'tipo_plan':6, 'pais':7, 'costo_q':8, 'costo_d':9}
     iccid_a_fila = {str(ic): i+2 for i, ic in enumerate(df_db['iccid'])}
-    
     batch_ops = []
     log_h = []
     hoy = obtener_hora_actual()
     count = 0
-
     for _, row in df_updates.iterrows():
         ic = str(row['iccid']).strip()
         if ic in iccid_a_fila:
@@ -277,6 +282,9 @@ def procesar_actualizacion_masiva(df_updates, usuario, solo_vacios=True):
             for col, c_idx in mapa_cols.items():
                 if col in row:
                     new_v = str(row[col]).strip()
+                    # Si es país, aplicamos Auto-Corrector
+                    if col == 'pais': new_v = normalizar_pais_inteligente(new_v)
+                    
                     old_v = str(orig_row[col]).strip()
                     if new_v and new_v.lower() != 'nan':
                         aplicar = False
@@ -290,7 +298,6 @@ def procesar_actualizacion_masiva(df_updates, usuario, solo_vacios=True):
             if cambios_txt:
                 count += 1
                 log_h.append([ic, "Edición Masiva", f"Campos: {','.join(cambios_txt)}", usuario, hoy])
-
     if batch_ops:
         try:
             ws.batch_update(batch_ops)
@@ -300,14 +307,20 @@ def procesar_actualizacion_masiva(df_updates, usuario, solo_vacios=True):
     return 0, "Sin cambios."
 
 def registrar_sim(datos, usuario):
+    # Validar duplicados
     df = leer_datos("sims")
     if 'iccid' in df.columns and str(datos['iccid']) in df['iccid'].astype(str).values: return False
+    
     l = str(datos['numero_linea']) if datos['numero_linea'] else ""
     c = str(datos['cliente']) if datos['cliente'] else ""
     e = "Activa" if l and c else "Botiquin"
     f = obtener_hora_actual()
+    
+    # Auto-Corregir País antes de guardar
+    pais_clean = normalizar_pais_inteligente(datos['pais'])
+    
     fila = [str(datos['iccid']), l, c, str(datos['placa']), str(datos['imei']),
-            str(datos['tipo_plan']), str(datos['pais']), limpiar_moneda(datos['costo_q']), limpiar_moneda(datos['costo_d']), e, f]
+            str(datos['tipo_plan']), pais_clean, limpiar_moneda(datos['costo_q']), limpiar_moneda(datos['costo_d']), e, f]
     escribir_fila("sims", fila)
     escribir_fila("historial", [str(datos['iccid']), "Creacion", f"Estado: {e}", usuario, f])
     return True
@@ -323,9 +336,15 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
     for _, row in df_limpio.iterrows():
         ic = str(row['iccid']).strip()
         if not ic or ic in existentes: d += 1; continue
+        
         l, cli = str(row['numero_linea']).replace(".0",""), str(row['cliente'])
         est = "Activa" if l and cli else "Botiquin"
-        nuevas.append([ic, l, cli, str(row['placa']), str(row['imei']), str(row['tipo_plan']), str(row['pais']), limpiar_moneda(row['costo_q']), limpiar_moneda(row['costo_d']), est, hoy])
+        
+        # Auto-Corregir País
+        pais_in = row.get('pais', '')
+        pais_clean = normalizar_pais_inteligente(pais_in)
+
+        nuevas.append([ic, l, cli, str(row['placa']), str(row['imei']), str(row['tipo_plan']), pais_clean, limpiar_moneda(row['costo_q']), limpiar_moneda(row['costo_d']), est, hoy])
         hist.append([ic, "Creacion Masiva", f"Estado: {est}", usuario, hoy])
         existentes.add(ic)
         c += 1
@@ -335,11 +354,15 @@ def procesar_carga_masiva_turbo(df_limpio, usuario):
     return c, d
 
 def actualizar_datos_sim(iccid, datos, usuario):
+    # Auto-Corrección de País
+    datos['pais'] = normalizar_pais_inteligente(datos['pais'])
+    
     linea = str(datos['numero_linea'])
     cliente = str(datos['cliente'])
     nuevo_estado = "Activa" if linea and cliente else "Botiquin"
     datos_full = datos.copy()
     datos_full['estado'] = nuevo_estado
+    
     if actualizar_sim_completa(iccid, datos_full):
         f = obtener_hora_actual()
         escribir_fila("historial", [iccid, "Actualizacion", f"Estado: {nuevo_estado}", usuario, f])
@@ -383,7 +406,7 @@ def eliminar_usuario_db(email):
     except: return False
 
 # ==============================================================================
-# 4. MÓDULOS UI (INTERFACES)
+# 4. MÓDULOS UI
 # ==============================================================================
 
 def app_gestion_clientes():
@@ -469,11 +492,9 @@ def app_gestion_usuarios():
                             eliminar_usuario_db(email_sel); st.success("Eliminado."); time.sleep(1.5); st.rerun()
 
 def app_control_sim():
-    # --- SEGURIDAD Y FILTRO PENDIENTES ---
     paises_user = st.session_state.get('paises_asignados', [])
-    if not paises_user:
-        if st.session_state.rol == 'admin': paises_user = [] 
-        else: paises_user = ["SIN_ACCESO"] 
+    if not paises_user and st.session_state.rol != 'admin':
+        paises_user = ["SIN_ACCESO"]
 
     st.sidebar.markdown("### 📱 Menú SIMs")
     st.session_state.zona_horaria = st.sidebar.selectbox("Zona Horaria:", ["America/Guatemala", "America/Bogota", "America/Mexico_City", "UTC"])
@@ -487,26 +508,29 @@ def app_control_sim():
     if 'form_id' not in st.session_state: st.session_state.form_id = 0
     clientes_db = obtener_lista_clientes()
 
-    # --- LÓGICA DE CARGA Y FILTRO (CORREGIDA PARA PENDIENTES) ---
+    # --- LÓGICA DE CARGA ---
     df_raw = leer_datos("sims")
     
-    # 1. Normalizar vacíos a PENDIENTE
+    # 1. Rellenar vacíos con PENDIENTE
     if 'pais' in df_raw.columns:
         df_raw['pais'] = df_raw['pais'].replace("", "PENDIENTE ⚠️")
         df_raw['pais'] = df_raw['pais'].fillna("PENDIENTE ⚠️")
+        # Marcar cualquier país no oficial como PENDIENTE
+        df_raw.loc[~df_raw['pais'].isin(LISTA_PAISES + ["PENDIENTE ⚠️"]), 'pais'] = "PENDIENTE ⚠️"
 
-    # 2. Aplicar Filtro: Mis países OR Pendientes
-    if paises_user:
+    # 2. FILTRO (MODO DIOS PARA ADMIN)
+    if st.session_state.rol == 'admin':
+        # Admin ve TODO: Errores, PENDIENTES, y todos los países, sin importar su asignación personal
+        df = df_raw
+    elif paises_user:
+        # Usuarios ven solo sus países asignados O pendientes
         df = df_raw[ (df_raw['pais'].isin(paises_user)) | (df_raw['pais'] == "PENDIENTE ⚠️") ]
     else:
-        if st.session_state.rol == 'admin': df = df_raw 
-        else: df = pd.DataFrame(columns=df_raw.columns)
+        df = pd.DataFrame(columns=df_raw.columns)
 
     # --- PANTALLAS ---
     if choice == "Dashboard":
         st.title("📊 Tablero de Control")
-        
-        # SIEMPRE MOSTRAR TARJETAS (Incluso si son 0)
         st.markdown("### Resumen General")
         total_inv = len(df)
         total_activas = len(df[df['estado']=='Activa']) if not df.empty else 0
@@ -520,7 +544,6 @@ def app_control_sim():
         c4.metric("Bajas / Canceladas", total_bajas, border=True)
         st.markdown("---")
         
-        # Validar si hay datos para mostrar gráficos
         if total_inv > 0:
             t1, t2 = st.tabs(["🌍 Análisis Global", "🏢 CRM Cliente"])
             with t1:
@@ -551,7 +574,7 @@ def app_control_sim():
                         st.dataframe(df_c[['iccid','numero_linea','placa','estado','pais']], use_container_width=True, hide_index=True)
                     else: st.warning("Sin SIMs asignadas.")
         else:
-            st.info("👋 No hay SIMs registradas en tu región o permisos.")
+            st.info("👋 No hay SIMs registradas.")
 
     elif choice == "🔍 Consulta SIM":
         st.subheader("🔍 Buscador Inteligente")
@@ -575,7 +598,7 @@ def app_control_sim():
                     k4.write(f"**Placa:** {row['placa']}")
                     k5.write(f"**IMEI:** {row['imei']}")
                     k6.write(f"**Plan:** {row['tipo_plan']}")
-        else: st.warning("No hay datos disponibles para búsqueda.")
+        else: st.warning("No hay datos disponibles.")
 
     elif choice == "Registrar SIM":
         st.subheader("➕ Registrar")
@@ -767,4 +790,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
