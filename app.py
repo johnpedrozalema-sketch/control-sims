@@ -19,8 +19,8 @@ st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="w
 
 NOMBRE_HOJA = "Base de Datos SIMs"
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-KEY_FILE = 'credenciales.json'
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Ecuador"]
+KEY_FILE = 'control-simcards-41e8ebd290f8.json'
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Colombia","Ecuador"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
@@ -65,7 +65,7 @@ def limpiar_moneda(valor):
     except: return 0.0
 
 def normalizar_pais_inteligente(texto_entrada):
-    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "": return "" # Retorna vacío si no hay dato para no borrar lo existente
+    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "": return "" 
     t = str(texto_entrada).strip().lower()
     mapa = {
         "guatemala": "Guatemala", "guate": "Guatemala", "gt": "Guatemala",
@@ -74,8 +74,9 @@ def normalizar_pais_inteligente(texto_entrada):
         "nicaragua": "Nicaragua", "ni": "Nicaragua",
         "costa rica": "Costa Rica", "cr": "Costa Rica",
         "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
-        "republica dominicana": "Republica Dominicana", "RD": "Republica Dominicana", "rd": "Republica Dominicana",
-        "ecuador": "Ecuador", "ecu": "Ecuador"
+        "ecuador": "Ecuador", "ECU": "Ecuador", "ecu": "Ecuador",
+        "colombia": "Colombia", "co": "Colombia",
+        "RD": "Republica Dominicana", "republica dominicana": "Republica Dominicana"
     }
     if t in mapa: return mapa[t]
     if t.title() in LISTA_PAISES: return t.title()
@@ -186,19 +187,13 @@ def actualizar_sim_completa(iccid, d):
         ws.batch_update(vals); limpiar_cache(); return True
     except: return False
 
-# --- FUNCIÓN DE ACTUALIZACIÓN INTELIGENTE (SMART MERGE) ---
+# --- FUNCIÓN DE ACTUALIZACIÓN INTELIGENTE ---
 def procesar_actualizacion_masiva(df_up, user):
-    """
-    Actualiza SOLO si la celda del Excel contiene datos.
-    Si la celda del Excel está vacía, NO toca el dato existente en la base de datos.
-    """
     df_db = leer_datos("sims")
     if df_db.empty: return 0, "Base de datos vacía"
     
-    # 1. Normalizar Cabeceras del Excel
     df_up.columns = [c.strip().lower().replace(" ", "_").replace("á","a").replace("í","i") for c in df_up.columns]
     
-    # Mapeo flexible de columnas para que el sistema entienda "Cliente" o "Nombre Cliente"
     mapa_flexible = {
         'icc_id': 'iccid', 'sim': 'iccid',
         'linea': 'numero_linea', 'numero': 'numero_linea', 'telefono': 'numero_linea',
@@ -210,66 +205,41 @@ def procesar_actualizacion_masiva(df_up, user):
         'costo_q': 'costo_q', 'q': 'costo_q',
         'costo_d': 'costo_d', 'd': 'costo_d', 'usd': 'costo_d'
     }
-    
-    # Renombrar columnas del Excel según el mapa
     df_up = df_up.rename(columns=mapa_flexible)
-    
     ws = conectar_google().worksheet("sims")
-    
-    # Mapa de ICCID a fila en Google Sheets
     ic_map = {str(ic): i+2 for i, ic in enumerate(df_db['iccid'])}
-    
-    # Columnas de destino en la BD (Columna A=1, B=2, etc)
     cols_db = {'numero_linea':2,'cliente':3,'placa':4,'imei':5,'tipo_plan':6,'pais':7,'costo_q':8,'costo_d':9}
     
     ops = []; log = []; hoy = obtener_hora_actual(); count = 0
     columnas_encontradas = [c for c in df_up.columns if c in cols_db]
     
-    if not columnas_encontradas:
-        return 0, f"No se encontraron columnas válidas para actualizar. (Detectadas: {list(df_up.columns)})"
+    if not columnas_encontradas: return 0, f"Sin columnas válidas. (Detectadas: {list(df_up.columns)})"
 
     for _, row in df_up.iterrows():
         ic = str(row.get('iccid','')).strip().replace(".0","")
-        
-        # Solo procesamos si existe el ICCID en la BD
         if ic in ic_map:
-            r = ic_map[ic]
-            chg = []
-            
+            r = ic_map[ic]; chg = []
             for k in columnas_encontradas:
-                # Valor crudo del Excel
                 raw_val = row[k]
+                if pd.isna(raw_val) or str(raw_val).strip() == "": continue
                 
-                # REGLA DE ORO: Si es nulo/vacío, SALTAR (No borrar dato existente)
-                if pd.isna(raw_val) or str(raw_val).strip() == "":
-                    continue
-                
-                # Si llegamos aquí, hay un dato nuevo que escribir
                 nv = str(raw_val).strip()
-                
-                # Tratamiento especial para País
                 if k == 'pais': nv = normalizar_pais_inteligente(nv)
-                
-                # Si el país normalizado dio vacío (porque era basura), no actualizamos
                 if k == 'pais' and nv == "": continue
 
-                # Agregar operación de actualización
                 cidx = cols_db[k]
                 ops.append({'range': gspread.utils.rowcol_to_a1(r, cidx), 'values': [[nv]]})
                 chg.append(k)
-            
             if chg:
                 count += 1
                 log.append([ic, "Masiva Smart", f"Upd: {','.join(chg)}", user, hoy])
     
     if ops:
         try:
-            ws.batch_update(ops)
-            escribir_lote("historial", log)
+            ws.batch_update(ops); escribir_lote("historial", log)
             return count, f"Actualizadas {count} SIMs exitosamente."
         except Exception as e: return 0, f"Error Google: {str(e)}"
-    
-    return 0, "Sin cambios (Probablemente el Excel estaba vacío de datos útiles)."
+    return 0, "Sin cambios (Excel vacío o datos repetidos)."
 
 def registrar_sim(d, user):
     df = leer_datos("sims")
@@ -294,9 +264,83 @@ def procesar_carga_masiva_turbo(df, user):
     if new: escribir_lote("sims", new); escribir_lote("historial", log)
     return c, d
 
+def eliminar_usuario_db(email):
+    try:
+        ws = conectar_google().worksheet("usuarios"); c = ws.find(email); ws.delete_rows(c.row); return True
+    except: return False
+
 # ==============================================================================
 # 4. INTERFAZ
 # ==============================================================================
+
+# --- MÓDULO DE GESTIÓN DE USUARIOS (RECUPERADO) ---
+def app_gestion_usuarios():
+    st.header("👤 Administración de Usuarios")
+    st.markdown("""<style>.stSelectbox {margin-bottom: 20px;} div[data-testid="stForm"] {border: 1px solid #e0e0e0; padding: 20px; border-radius: 10px;}</style>""", unsafe_allow_html=True)
+    tab_crear, tab_gestionar = st.tabs(["➕ Crear Nuevo", "⚙️ Gestionar Existentes"])
+    
+    with tab_crear:
+        st.info("💡 Se enviará correo de activación.")
+        with st.form("form_crear_usuario", clear_on_submit=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                new_email = st.text_input("📧 Correo")
+                new_nombre = st.text_input("👤 Nombre")
+            with col_b:
+                new_rol = st.radio("Nivel", ["general", "admin"], horizontal=True)
+                new_paises = st.multiselect("🌍 Países Asignados", LISTA_PAISES, default=["Guatemala"])
+            if st.form_submit_button("✨ Crear Usuario", type="primary"):
+                ws = conectar_google().worksheet("usuarios")
+                if new_email and new_nombre and new_paises:
+                    if new_email in ws.col_values(1): st.error("El usuario ya existe.")
+                    else:
+                        token = str(uuid.uuid4())
+                        ws.append_row([new_email, "PENDIENTE", new_rol, new_nombre, token, ",".join(new_paises)])
+                        if enviar_link_activacion(new_email, token, new_nombre): st.success("✅ Usuario creado y correo enviado.")
+                        else: st.warning("Usuario creado, pero hubo error enviando el correo.")
+                else: st.error("Faltan datos.")
+
+    with tab_gestionar:
+        ws = conectar_google().worksheet("usuarios")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        if not df.empty:
+            st.markdown("#### 🔍 Buscar Usuario")
+            opciones = [f"{row['nombre']} ({row['email']})" for i, row in df.iterrows()]
+            seleccion = st.selectbox("Seleccione:", opciones, index=None, placeholder="Buscar...")
+            if seleccion:
+                email_sel = seleccion.split("(")[-1].replace(")", "")
+                user_data = df[df['email'] == email_sel].iloc[0]
+                st.divider(); st.subheader(f"✏️ Editando: {user_data['nombre']}")
+                with st.container(border=True):
+                    with st.form("form_edicion"):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.text_input("Correo", value=user_data['email'], disabled=True)
+                            edit_nombre = st.text_input("Nombre", value=user_data['nombre'])
+                        with c2:
+                            idx_rol = 0 if user_data['rol'] == 'general' else 1
+                            edit_rol = st.radio("Rol", ["general", "admin"], index=idx_rol, horizontal=True)
+                            curr_p = [p.strip() for p in str(user_data['paises']).split(",") if p.strip() in LISTA_PAISES]
+                            edit_paises = st.multiselect("Países", LISTA_PAISES, default=curr_p)
+                        if st.form_submit_button("💾 Guardar Cambios", type="primary"):
+                            try:
+                                cell = ws.find(email_sel); r = cell.row
+                                updates = [
+                                    {'range': f'C{r}', 'values': [[edit_rol]]},
+                                    {'range': f'D{r}', 'values': [[edit_nombre]]},
+                                    {'range': f'F{r}', 'values': [[",".join(edit_paises)]]}
+                                ]
+                                ws.batch_update(updates)
+                                st.success("✅ Actualizado."); time.sleep(1.5); st.rerun()
+                            except Exception as e: st.error(f"Error: {e}")
+                st.markdown("### 🚫 Zona de Riesgo")
+                with st.expander("Eliminar cuenta"):
+                    if email_sel == st.session_state.usuario: st.error("No puedes borrarte a ti mismo.")
+                    else:
+                        chk = st.checkbox("Confirmar eliminación.")
+                        if st.button("🔥 Eliminar") and chk:
+                            eliminar_usuario_db(email_sel); st.success("Eliminado."); time.sleep(1.5); st.rerun()
 
 def app_control_sim():
     p_user = st.session_state.get('paises_asignados', [])
@@ -374,7 +418,7 @@ def app_control_sim():
         
         with t2:
             st.info("Sube Excel. Columnas: iccid, linea, cliente, pais...")
-            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v12")
+            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v12_1")
             if upl and st.button("Procesar Carga"):
                 c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
                 st.success(f"Cargados: {c} | Duplicados: {d}")
@@ -401,12 +445,10 @@ def app_control_sim():
                         actualizar_sim_completa(ic, {'numero_linea':nl,'cliente':nc,'placa':np,'imei':ni,'tipo_plan':npl,'pais':npa,'costo_q':ncq,'costo_d':ncd,'estado':'Activa' if nl and nc else 'Botiquin'})
                         st.success("Hecho"); refrescar_pagina(2)
         
-        # --- UPDATE MASIVO INTELIGENTE (FIX) ---
         with t2:
             st.markdown("### 📥 Actualización Inteligente")
-            st.info("Solo se actualizarán las celdas que contengan datos. Las celdas vacías en el Excel se ignorarán (no borran datos existentes).")
-            
-            upl_upd = st.file_uploader("Archivo Excel (Update)", type=["xlsx"], key="upl_upd_smart_v12")
+            st.info("Solo se actualizarán las celdas que contengan datos. Las celdas vacías en el Excel se ignorarán.")
+            upl_upd = st.file_uploader("Archivo Excel (Update)", type=["xlsx"], key="upl_upd_smart_v12_1")
             
             if upl_upd is not None:
                 st.success("✅ Archivo recibido.")
@@ -466,4 +508,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
