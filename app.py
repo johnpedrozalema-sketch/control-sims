@@ -19,8 +19,8 @@ st.set_page_config(page_title="Control SIM Cloud", page_icon="☁️", layout="w
 
 NOMBRE_HOJA = "Base de Datos SIMs"
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-KEY_FILE = 'credenciales.json'
-LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "México", "Colombia"]
+KEY_FILE = 'control-simcards-41e8ebd290f8.json'
+LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Colombia","Ecuador"]
 
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
@@ -56,16 +56,15 @@ def conectar_google():
         st.error(f"Error conexión Google: {e}"); st.stop()
 
 def limpiar_moneda(valor):
-    if pd.isna(valor) or str(valor).strip() == "": return 0.0
-    if isinstance(valor, (int, float)): return float(valor)
-    valor = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
-    if "." in valor and "," in valor: valor = valor.replace(".", "").replace(",", ".")
-    elif "," in valor: valor = valor.replace(",", ".")
-    try: return float(valor)
+    if pd.isna(valor) or str(valor).strip() == "" or str(valor).lower() == 'nan': return 0.0
+    val_str = str(valor).strip().upper().replace("Q", "").replace("$", "").replace(" ", "")
+    if "." in val_str and "," in val_str: val_str = val_str.replace(".", "").replace(",", ".")
+    elif "," in val_str: val_str = val_str.replace(",", ".")
+    try: return float(val_str)
     except: return 0.0
 
 def normalizar_pais_inteligente(texto_entrada):
-    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "": return "" 
+    if pd.isna(texto_entrada) or str(texto_entrada).strip() == "" or str(texto_entrada).lower() == 'nan': return "" 
     t = str(texto_entrada).strip().lower()
     mapa = {
         "guatemala": "Guatemala", "guate": "Guatemala", "gt": "Guatemala",
@@ -74,8 +73,9 @@ def normalizar_pais_inteligente(texto_entrada):
         "nicaragua": "Nicaragua", "ni": "Nicaragua",
         "costa rica": "Costa Rica", "cr": "Costa Rica",
         "panama": "Panamá", "panamá": "Panamá", "pa": "Panamá",
-        "mexico": "México", "méxico": "México", "mx": "México",
-        "colombia": "Colombia", "co": "Colombia"
+        "ecuador": "Ecuador", "ECU": "Ecuador", "ecu": "Ecuador",
+        "colombia": "Colombia", "co": "Colombia",
+        "RD": "Republica Dominicana", "republica dominicana": "Republica Dominicana"
     }
     if t in mapa: return mapa[t]
     if t.title() in LISTA_PAISES: return t.title()
@@ -144,6 +144,7 @@ def leer_datos(pestaña):
             'país': 'pais', 'country': 'pais'
         }
         df = df.rename(columns=rename_map)
+        # Convertir todo a string al leer para evitar problemas de notación científica
         df = df.astype(str).apply(lambda x: x.str.strip())
 
         if 'iccid' in df.columns:
@@ -186,11 +187,12 @@ def actualizar_sim_completa(iccid, d):
         ws.batch_update(vals); limpiar_cache(); return True
     except: return False
 
-# --- FUNCIÓN DE ACTUALIZACIÓN INTELIGENTE ---
+# --- FUNCIÓN DE ACTUALIZACIÓN INTELIGENTE V13 (Super Robusta) ---
 def procesar_actualizacion_masiva(df_up, user):
     df_db = leer_datos("sims")
     if df_db.empty: return 0, "Base de datos vacía"
     
+    # Normalizar columnas del Excel cargado
     df_up.columns = [c.strip().lower().replace(" ", "_").replace("á","a").replace("í","i") for c in df_up.columns]
     
     mapa_flexible = {
@@ -205,40 +207,71 @@ def procesar_actualizacion_masiva(df_up, user):
         'costo_d': 'costo_d', 'd': 'costo_d', 'usd': 'costo_d'
     }
     df_up = df_up.rename(columns=mapa_flexible)
+    
+    # Convertir todo a string para evitar errores de NaN/float
+    df_up = df_up.astype(str)
+    
     ws = conectar_google().worksheet("sims")
-    ic_map = {str(ic): i+2 for i, ic in enumerate(df_db['iccid'])}
+    # Mapa de ICCIDs de la DB (String puro)
+    ic_map = {str(ic).strip(): i+2 for i, ic in enumerate(df_db['iccid'])}
+    
     cols_db = {'numero_linea':2,'cliente':3,'placa':4,'imei':5,'tipo_plan':6,'pais':7,'costo_q':8,'costo_d':9}
     
     ops = []; log = []; hoy = obtener_hora_actual(); count = 0
     columnas_encontradas = [c for c in df_up.columns if c in cols_db]
     
     if not columnas_encontradas: return 0, f"Sin columnas válidas. (Detectadas: {list(df_up.columns)})"
+    
+    match_count = 0
+    total_rows = len(df_up)
 
     for _, row in df_up.iterrows():
-        ic = str(row.get('iccid','')).strip().replace(".0","")
+        # Limpieza agresiva del ICCID del Excel
+        raw_ic = str(row.get('iccid','')).strip()
+        if raw_ic.lower() == 'nan' or raw_ic == '': continue
+        
+        ic = raw_ic.replace(".0", "").split(".")[0] # Eliminar decimales si es que quedaron
+        
         if ic in ic_map:
-            r = ic_map[ic]; chg = []
+            match_count += 1
+            r = ic_map[ic]
+            chg = []
+            
             for k in columnas_encontradas:
-                raw_val = row[k]
-                if pd.isna(raw_val) or str(raw_val).strip() == "": continue
+                raw_val = str(row[k]).strip()
                 
-                nv = str(raw_val).strip()
-                if k == 'pais': nv = normalizar_pais_inteligente(nv)
-                if k == 'pais' and nv == "": continue
+                # Ignorar valores vacíos o 'nan'
+                if raw_val == "" or raw_val.lower() == 'nan' or raw_val.lower() == 'none':
+                    continue
+                
+                nv = raw_val
+                
+                # Normalización específica
+                if k == 'pais':
+                    nv = normalizar_pais_inteligente(nv)
+                    if nv == "": continue # Si el país era basura, no actualizar
+                
+                # Limpieza de moneda
+                if k in ['costo_q', 'costo_d']:
+                    try: nv = float(limpiar_moneda(nv))
+                    except: continue
 
                 cidx = cols_db[k]
                 ops.append({'range': gspread.utils.rowcol_to_a1(r, cidx), 'values': [[nv]]})
                 chg.append(k)
+            
             if chg:
                 count += 1
                 log.append([ic, "Masiva Smart", f"Upd: {','.join(chg)}", user, hoy])
     
     if ops:
         try:
-            ws.batch_update(ops); escribir_lote("historial", log)
-            return count, f"Actualizadas {count} SIMs exitosamente."
+            ws.batch_update(ops)
+            escribir_lote("historial", log)
+            return count, f"Proceso exitoso. Se actualizaron {count} SIMs. (Coincidencias encontradas: {match_count} de {total_rows} filas)."
         except Exception as e: return 0, f"Error Google: {str(e)}"
-    return 0, "Sin cambios (Excel vacío o datos repetidos)."
+    
+    return 0, f"Sin cambios. Se encontraron {match_count} ICCIDs coincidentes de {total_rows} filas, pero no habían datos nuevos válidos para actualizar."
 
 def registrar_sim(d, user):
     df = leer_datos("sims")
@@ -249,17 +282,39 @@ def registrar_sim(d, user):
     escribir_fila("sims", row); escribir_fila("historial", [d['iccid'], "Creacion", f"Est: {e}", user, row[-1]]); return True
 
 def procesar_carga_masiva_turbo(df, user):
-    df = df.fillna(""); df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    # Asegurar que todo se trate como string al cargar
+    df = df.astype(str)
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    
     db = leer_datos("sims"); ex = set(db['iccid'].tolist()) if not db.empty else set()
     new = []; log = []; h = obtener_hora_actual(); c=0; d=0
+    
     for _, r in df.iterrows():
-        ic = str(r.get('iccid','')).strip().replace(".0","")
-        if not ic or ic in ex: d+=1; continue
-        l = str(r.get('numero_linea','')).replace(".0",""); cli = str(r.get('cliente',''))
+        raw_ic = str(r.get('iccid','')).strip()
+        if raw_ic.lower() == 'nan' or raw_ic == '': 
+            d+=1; continue
+            
+        ic = raw_ic.replace(".0", "").split(".")[0]
+        
+        if ic in ex: 
+            d+=1; continue
+            
+        l = str(r.get('numero_linea','')).strip().replace("nan","")
+        cli = str(r.get('cliente','')).strip().replace("nan","")
+        
         est = "Activa" if l and cli else "Botiquin"
         pc = normalizar_pais_inteligente(r.get('pais',''))
-        new.append([ic, l, cli, r.get('placa',''), r.get('imei',''), r.get('tipo_plan',''), pc, limpiar_moneda(r.get('costo_q','')), limpiar_moneda(r.get('costo_d','')), est, h])
+        
+        # Limpieza de valores
+        pla = str(r.get('placa','')).replace("nan","")
+        im = str(r.get('imei','')).replace("nan","")
+        tpl = str(r.get('tipo_plan','')).replace("nan","")
+        cq = limpiar_moneda(r.get('costo_q','0'))
+        cd = limpiar_moneda(r.get('costo_d','0'))
+
+        new.append([ic, l, cli, pla, im, tpl, pc, cq, cd, est, h])
         log.append([ic, "Carga Masiva", est, user, h]); ex.add(ic); c+=1
+        
     if new: escribir_lote("sims", new); escribir_lote("historial", log)
     return c, d
 
@@ -272,7 +327,7 @@ def eliminar_usuario_db(email):
 # 4. INTERFAZ
 # ==============================================================================
 
-# --- MÓDULO DE GESTIÓN DE CLIENTES (RESTAURADO) ---
+# --- MÓDULO DE GESTIÓN DE CLIENTES ---
 def app_gestion_clientes():
     st.subheader("🏢 Directorio de Clientes")
     t1, t2 = st.tabs(["Nuevo Cliente", "Listado"])
@@ -287,7 +342,7 @@ def app_gestion_clientes():
     with t2:
         st.dataframe(leer_datos("clientes"), use_container_width=True)
 
-# --- MÓDULO DE GESTIÓN DE USUARIOS (EXISTENTE) ---
+# --- MÓDULO DE GESTIÓN DE USUARIOS ---
 def app_gestion_usuarios():
     st.header("👤 Administración de Usuarios")
     st.markdown("""<style>.stSelectbox {margin-bottom: 20px;} div[data-testid="stForm"] {border: 1px solid #e0e0e0; padding: 20px; border-radius: 10px;}</style>""", unsafe_allow_html=True)
@@ -432,9 +487,10 @@ def app_control_sim():
         
         with t2:
             st.info("Sube Excel. Columnas: iccid, linea, cliente, pais...")
-            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v12_1")
+            # IMPORTANTE: Forzamos la lectura como texto (dtype=str) para que los ICCIDs no se corrompan
+            upl = st.file_uploader("Archivo Excel", type=["xlsx"], key="up_reg_final_v13")
             if upl and st.button("Procesar Carga"):
-                c, d = procesar_carga_masiva_turbo(pd.read_excel(upl), st.session_state.usuario)
+                c, d = procesar_carga_masiva_turbo(pd.read_excel(upl, dtype=str), st.session_state.usuario)
                 st.success(f"Cargados: {c} | Duplicados: {d}")
 
     elif choice == "Actualizar Datos":
@@ -460,14 +516,15 @@ def app_control_sim():
                         st.success("Hecho"); refrescar_pagina(2)
         
         with t2:
-            st.markdown("### 📥 Actualización Inteligente")
-            st.info("Solo se actualizarán las celdas que contengan datos. Las celdas vacías en el Excel se ignorarán.")
-            upl_upd = st.file_uploader("Archivo Excel (Update)", type=["xlsx"], key="upl_upd_smart_v12_1")
+            st.markdown("### 📥 Actualización Inteligente V13")
+            st.info("Solo se actualizarán las celdas con datos. Se ignoran vacíos y 'NaN'.")
+            upl_upd = st.file_uploader("Archivo Excel (Update)", type=["xlsx"], key="upl_upd_smart_v13")
             
             if upl_upd is not None:
                 st.success("✅ Archivo recibido.")
-                if st.button("🚀 Ejecutar Actualización Inteligente"):
-                    c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd), st.session_state.usuario)
+                if st.button("🚀 Ejecutar Actualización"):
+                    # Forzamos lectura como STRING (dtype=str) para que el ICCID sea exacto
+                    c, m = procesar_actualizacion_masiva(pd.read_excel(upl_upd, dtype=str), st.session_state.usuario)
                     if c > 0:
                         st.balloons()
                         st.success(m)
