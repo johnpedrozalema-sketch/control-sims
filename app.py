@@ -22,6 +22,7 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'control-simcards-41e8ebd290f8.json'
 LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Colombia","Ecuador"]
 
+
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
 # ==============================================================================
@@ -273,7 +274,22 @@ def eliminar_usuario_db(email):
 # 4. INTERFAZ
 # ==============================================================================
 
-# --- MÓDULO DE GESTIÓN DE USUARIOS (RECUPERADO) ---
+# --- MÓDULO DE GESTIÓN DE CLIENTES (RESTAURADO) ---
+def app_gestion_clientes():
+    st.subheader("🏢 Directorio de Clientes")
+    t1, t2 = st.tabs(["Nuevo Cliente", "Listado"])
+    with t1:
+        with st.form("add_c"):
+            nm = st.text_input("Nombre Empresa")
+            if st.form_submit_button("Guardar"):
+                if nm: 
+                    ok, m = crear_nuevo_cliente(nm.strip())
+                    if ok: st.success(m); refrescar_pagina(1)
+                    else: st.warning(m)
+    with t2:
+        st.dataframe(leer_datos("clientes"), use_container_width=True)
+
+# --- MÓDULO DE GESTIÓN DE USUARIOS (EXISTENTE) ---
 def app_gestion_usuarios():
     st.header("👤 Administración de Usuarios")
     st.markdown("""<style>.stSelectbox {margin-bottom: 20px;} div[data-testid="stForm"] {border: 1px solid #e0e0e0; padding: 20px; border-radius: 10px;}</style>""", unsafe_allow_html=True)
@@ -508,5 +524,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
