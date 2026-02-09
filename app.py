@@ -22,7 +22,6 @@ SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis
 KEY_FILE = 'control-simcards-41e8ebd290f8.json'
 LISTA_PAISES = ["Guatemala", "El Salvador", "Honduras", "Nicaragua", "Costa Rica", "Panamá", "Republica Dominicana", "Colombia","Ecuador"]
 
-
 # ==============================================================================
 # 2. FUNCIONES DE UTILIDAD
 # ==============================================================================
